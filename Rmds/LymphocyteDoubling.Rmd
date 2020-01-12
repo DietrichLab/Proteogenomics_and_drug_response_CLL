@@ -1,0 +1,201 @@
+---
+title: 'CLL Proteomics - Lymphocyte doubling time'
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(gtools)
+library(openxlsx)
+library(pheatmap)
+library(reshape2)
+library(progress)
+library(Matrix)
+library(Hmisc)
+library(lemon)
+library(ggpubr)
+library(effsize)
+library(ggbeeswarm)
+library(ggfortify)
+library(ggpmisc)
+library(ggrepel)
+library(readxl)
+library(DESeq2)
+library(TOSTER)
+library(tidyverse)
+library(vsn)
+library(fdrtool)
+library(limma)
+library(apeglm)
+library(IHW)
+library(Rtsne)
+library(biomartr)
+library(biomaRt)
+library(MultiAssayExperiment)
+library(PMA)
+library(gplots)
+library(RColorBrewer)
+library(grid)
+library(ConsensusClusterPlus)
+library(survival)
+library(survminer)
+library(cowplot)
+library(matrixStats)
+library(DEqMS)
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("/Volumes/sd17b003/Sophie/Analysis/Screen_analysis/Figure_layouts.R")
+load("/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/Robjects/CLL_Proteomics_Setup.RData")
+load("/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/Robjects/CLL_Proteomics_ConsensusClustering.RData")
+LymphoDoubling <- read.delim2(file = "/Users/sophierabe/Desktop/PhD/Bioinfo/Data/Lympho_Count_Sophie.csv", sep = ";", dec=",")
+```
+
+```{r Add CCP group}
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+```
+
+## Process
+```{r lymphocyte doubling time calculate, fig.height=20, cache=TRUE}
+LymphoDoubling$Datum <- LymphoDoubling$Datum %>% as.Date(format="%d.%m.%Y")
+
+# Get PIDs
+PIDs_Pat_doubling <- LymphoDoubling %>% .$PID %>% unique
+
+# Exclude patients currently in treatment
+PIDs_Pat_doubling <- multiomics_MAE@colData %>% as_tibble() %>% 
+  filter(PID %in% PIDs_Pat_doubling, treatment_status!="intreatment") %>% 
+  #filter(treated==1) %>%
+  dplyr::select(patient_ID, PID)
+
+treatment_history <- multiomics_MAE@colData %>% as_tibble() %>% 
+  filter(PID %in% PIDs_Pat_doubling$PID) %>%
+  dplyr::select(PID, date_last_pretreatment, sampleDate, date_next_treatment, PG) %>%
+  mutate(sampleDate=as.Date(sampleDate), date_last_pretreatment=as.Date(date_last_pretreatment), date_next_treatment=as.Date(date_next_treatment),
+         PID=as.integer(PID))
+```
+
+## Show all available lymphocyte counts
+Red= sample date  
+blue= last treatment  
+yellow= next treatment  
+```{r lymphocyte doubling time show all datapoints, fig.height=20, cache=TRUE, warning=FALSE}
+LymphoDoubling %>%
+  filter(PID %in% PIDs_Pat_doubling$PID) %>%
+  ggplot(aes(Datum, LymphoCount)) +
+  geom_point() +
+  pp_sra +
+  geom_vline(data = treatment_history %>% filter(PID %in% PIDs_Pat_doubling$PID), aes(xintercept=sampleDate), color="darkred") +
+  geom_vline(data = treatment_history %>% filter(PID %in% PIDs_Pat_doubling$PID), aes(xintercept=date_last_pretreatment), color="darkblue") +
+  geom_vline(data = treatment_history %>% filter(PID %in% PIDs_Pat_doubling$PID), aes(xintercept=date_next_treatment), color="orange1") +
+  facet_wrap(~PID, scales = "free_x")
+```
+
+## Join patient information and lymphocyte counts
+```{r lymphocyte doubling time meta, cache=TRUE, dependson=c("lymphocyte doubling time calculate")}
+LymphoDoubling_df <- left_join( LymphoDoubling %>% filter(PID %in% PIDs_Pat_doubling$PID),
+          treatment_history %>% filter(PID %in% PIDs_Pat_doubling$PID),
+          by= "PID") %>% as_tibble()
+```
+
+## Lymphocyte counts sample selection
+```{r lymphocyte doubling time plot lymphocyte counts collection, cache=TRUE, dependson=c("lymphocyte doubling time calculate", "lymphocyte doubling time plot")}
+LymphoDoubling_df %>% filter(Datum==sampleDate) %>% 
+  ggplot(aes(PG, LymphoCount)) + pp_sra + geom_boxplot(aes(fill=PG)) + 
+  geom_beeswarm() + scale_fill_manual(values = colors_CCP) +
+  ggtitle("Lymphocyte counts at sample collection") +
+  stat_compare_means(method = "anova")
+```
+
+## Filtering and calculating lymphocyte doubling time
+```{r lymphocyte doubling time plot, cache=TRUE, dependson=c("lymphocyte doubling time calculate", "lymphocyte doubling time plot")}
+message("Exclude timepoints after next treatment")
+LymphoDoubling_df <- LymphoDoubling_df %>%
+  filter(is.na(date_next_treatment) | Datum < date_next_treatment) 
+
+message("Exclude timepoints before last treatment")
+LymphoDoubling_df <- LymphoDoubling_df %>%
+  filter(is.na(date_last_pretreatment) | Datum > date_last_pretreatment) 
+
+message("Exclude patients who have 3 or less timepoints to get robust estimation of doubling time")
+doubling_pats <-  LymphoDoubling_df %>%
+  group_by(PID) %>%
+  dplyr::summarise(Nr_time_points= length(LymphoCount) ) %>%
+  filter(Nr_time_points >3) %>% .$PID
+
+LymphoDoubling_df <- LymphoDoubling_df %>%
+  filter(PID %in% doubling_pats)
+
+message("Exclude patients for which we see from lymphocyte count plots that since the last treatment the counts were still decreasing due to the treatment")
+LymphoDoubling_df <- LymphoDoubling_df %>%
+  filter(!PID %in% c(2243382, 1499406))
+
+message("Exclude timepoints for which Lymphocyte counts were 0")
+LymphoDoubling_df <- LymphoDoubling_df %>% filter(LymphoCount!=0)
+
+message("Remaining patients and estimated fits")
+LymphoDoubling_df %>%
+  ggplot(aes(Datum, log10(LymphoCount))) +
+  geom_point() +
+  pp_sra +
+  facet_wrap(~PID) +
+  geom_smooth(method = "lm") +
+  stat_regline_equation(size=2)
+
+message("Calculate lymphocyte doubling rate")
+dbtime <- sapply(unique(LymphoDoubling_df$PID), function(p){
+  df <- LymphoDoubling_df %>% filter(PID == p)
+  fit <- lm(log10(df$LymphoCount) ~ df$Datum)
+  dt <- coef(fit)["df$Datum"]
+  names(dt) <- p
+  return(dt)
+})
+
+sort(dbtime)
+```
+
+## Calculate association of lymphocyte doubling time and consensus cluster groups
+```{r lymphocyte doubling time CCP, cache=TRUE, dependson="lymphocyte doubling time plot", warning=FALSE}
+LDT_CCP_plot <- left_join(multiomics_MAE@colData %>% as_tibble(), enframe(dbtime, name = "PID", value = "growth_rate"), by=c("PID")) %>%
+  filter(!is.na(PG)) %>%
+  ggplot(aes(PG, growth_rate)) +
+  geom_boxplot(aes(fill=PG)) +
+  geom_beeswarm() +
+  pp_sra +
+  scale_fill_manual(values = colors_CCP) 
+LDT_CCP_plot +
+  stat_compare_means() +
+  stat_compare_means(ref.group = ".all.", label = "p.signif",  hide.ns = TRUE)
+
+growthrate_df <- left_join(multiomics_MAE@colData %>% as_tibble(), 
+                 enframe(log10(dbtime), name = "PID", value = "growth_rate"), 
+                 by=c("PID")) %>% 
+  filter(!is.na(PG), !is.na(growth_rate))
+compare_means(growthrate_df, formula = growth_rate~PG, ref.group = ".all." )
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```
+
