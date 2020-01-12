@@ -1,0 +1,533 @@
+---
+title: "Analysis CLL Proteomics - Final data Consensus clustering"
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(gtools)
+library(openxlsx)
+library(pheatmap)
+library(reshape2)
+library(progress)
+library(Matrix)
+library(Hmisc)
+library(lemon)
+library(ggpubr)
+library(effsize)
+library(ggbeeswarm)
+library(ggfortify)
+library(ggpmisc)
+library(ggrepel)
+library(readxl)
+library(DESeq2)
+library(TOSTER)
+library(tidyverse)
+library(vsn)
+library(fdrtool)
+library(limma)
+library(apeglm)
+library(IHW)
+library(Rtsne)
+library(biomartr)
+library(biomaRt)
+library(MultiAssayExperiment)
+library(PMA)
+library(gplots)
+library(RColorBrewer)
+library(grid)
+library(ConsensusClusterPlus)
+library(survival)
+library(survminer)
+library(cowplot)
+library(ggalluvial)
+```
+
+## Set paths
+```{r set paths}
+consensus_path <- "/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/"
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("/Volumes/sd17b003/Sophie/Analysis/Screen_analysis/Figure_layouts.R")
+load("/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/Robjects/CLL_Proteomics_Setup.RData")
+plasma_proteins <- read_delim("/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/Plasma_Proteins.txt", delim = "\t", col_names = "symbol")
+```
+
+# Analysis
+```{r analysis proteomics sample-sample correlation, fig.height=11.5, fig.width=12, cache=TRUE, dev=c("png","pdf"), message=FALSE}
+prot_cor_meta <- wideFormat(multiomics_MAE[ , , c("SNPs", "chrom_abber", "health_record_bin") ], colDataCols = c("gender") ) %>% as.data.frame() %>% dplyr::select(-(health_record_bin_gender_binary),-(health_record_bin_komplex_abberant_karyotype:health_record_bin_treated), -(SNPs_BIRC3:SNPs_EGR2), -(chrom_abber_del5_IgH:chrom_abber_gain8q24))
+
+rownames(prot_cor_meta) <- prot_cor_meta$primary
+```
+
+## Consensus clustering
+### Perform clustering
+```{r consensus clustering perform, cache=TRUE, dev=c("png","pdf"), fig.height=11.5, fig.width=12, dependson="analysis proteomics sample-sample correlation"}
+title=file.path(consensus_path, "Consensus")
+d <- assay(multiomics_MAE[prot_few_nas,,"proteomics"])
+results = ConsensusClusterPlus(d,maxK=10,reps=1000,pItem=0.8,pFeature=1,
+                               title=title,clusterAlg="hc",distance="pearson",seed=2019,plot="pdf")
+icl = calcICL(results,title=title,plot="pdf")
+clnr=6
+```
+
+### Consensus cluster groups
+```{r consensus clustering groups, cache=TRUE, dev=c("png","pdf"), fig.height=11.5, fig.width=12, dependson=c("analysis proteomics sample-sample correlation", "consensus clustering perform") }
+CCP_group5 <- results[[clnr]][["consensusClass"]]
+
+## Rename groups
+CCP_group5_ren <- CCP_group5
+CCP_group5_ren[CCP_group5==2] <- 1
+CCP_group5_ren[CCP_group5==4] <- 2
+CCP_group5_ren[CCP_group5==1] <- 4
+CCP_group5 <- CCP_group5_ren
+
+fivecl_pat <- colnames(d)
+
+fivecl_pat <- fivecl_pat %>% enframe()
+fivecl_anno <- wideFormat(multiomics_MAE[c("IGHV_mutated", "trisomy12", "TP53", "del17p13", "ATM", "SF3B1", "del11q", "del13q14" ), , ], colDataCols = c("doehner_groups" , "treated")) %>% 
+  as_tibble() %>% dplyr::select(-proteomics_ATM, -proteomics_SF3B1, -proteomics_TP53)
+fivecl_pat <- left_join(left_join(fivecl_pat, fivecl_anno, by=c("value"="primary")), 
+                        enframe(as.factor(CCP_group5), value = "PG", name = "value"), 
+                        by="value")
+fivecl_pat <- fivecl_pat %>% as.data.frame()
+
+fivecl_pat <- fivecl_pat  %>% arrange(PG, chrom_abber_trisomy12, health_record_bin_IGHV_mutated,SNPs_TP53 ,SNPs_ATM, chrom_abber_del11q, chrom_abber_del17p13, treated, doehner_groups)
+rownames(fivecl_pat) <- fivecl_pat$value
+
+ann_cols <- fivecl_pat[,c(4:13)] %>% mutate_all(as.character)
+rownames(ann_cols) <- rownames(fivecl_pat[,c(4:13)])
+
+ann_colors = list(
+  PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= colors_CCP[5], "6"= colors_CCP[6] ),
+    SNPs_ATM = c(`0`="#ffd6dd", "1"="#ca0020"),
+    SNPs_SF3B1= c(`0`="#ffd6dd", `1`="#ca0020"),
+    SNPs_TP53 = c(`0` = "#ffd6dd", `1` = "#ca0020"),
+    chrom_abber_del11q = c(`0` = "#ffefd1", `1` = "#FFA500"),
+   chrom_abber_del13q14 = c(`0` = "#ffefd1", `1` = "#FFA500"),
+   chrom_abber_del17p13 = c(`0` = "#ffefd1", `1` = "#FFA500"),
+   chrom_abber_trisomy12 = c(`0` = "#ffefd1", `1` = "#FFA500"),
+   health_record_bin_IGHV_mutated = c(`0` = "#d4efff", `1` = "#0571b0"),
+    treated=c(`1`= "gray40", `0`= "gray80" )
+)
+
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+```
+
+```{r consensus clustering groups tile, cache=TRUE, dev=c("png","pdf"), fig.height=11.5, fig.width=12, dependson=c("analysis proteomics sample-sample correlation", "consensus clustering perform")}
+ann_cols_tile_p <- ann_cols
+ann_cols_tile_p$pat_ID <- rownames(ann_cols_tile_p)
+ann_cols_tile <- ann_cols_tile_p
+ann_cols_tile <- ann_cols_tile %>% as_tibble()
+ann_cols_tile <- ann_cols_tile %>% gather("Alteration", "Value", treated:PG) %>%
+  mutate(alt=if_else(grepl( "SNPs_", Alteration ) & Value==0, "no SNV", if_else(grepl( "SNPs_", Alteration ) & Value==1, "SNV present", "NA" )  ))
+ann_cols_tile <- left_join(ann_cols_tile, ann_cols_tile_p %>% dplyr::select(pat_ID, PG) %>% unique(), by=c("pat_ID"))
+ann_cols_tile <- ann_cols_tile  %>%
+  mutate(alt=if_else(grepl( "chrom_abber", Alteration ) & Value==0, "no CNV", if_else(grepl( "chrom_abber", Alteration ) & Value==1, "CNV present", alt )  ))
+ann_cols_tile <- ann_cols_tile  %>% mutate(alt = if_else(Alteration=="PG", as.character(Value), alt))
+ann_cols_tile <- ann_cols_tile  %>%
+  mutate(alt=if_else(grepl( "treated", Alteration ) & Value==0, "untreated", if_else(grepl( "treated", Alteration ) & Value==1, "treated", alt )  ))
+ann_cols_tile <- ann_cols_tile  %>%
+  mutate(alt=if_else(grepl( "IGHV", Alteration ) & Value==0, "IGHV unmutated", if_else(grepl( "IGHV", Alteration ) & Value==1, "IGHV mutated", alt )  ))
+ann_cols_tile <- ann_cols_tile %>% mutate(Alteration = gsub("SNPs_|chrom_abber_|health_record_bin_", "", Alteration) )
+ann_cols_tile <- ann_cols_tile %>% mutate(Alteration = as.factor(Alteration))
+ann_cols_tile <- ann_cols_tile %>% mutate(Alteration = factor(Alteration, levels = c("treated", "SF3B1","ATM", "TP53", "del13q14", "del11q","del17p13" ,"trisomy12" ,"IGHV_mutated", "PG")))
+ann_cols_tile <- ann_cols_tile %>% mutate(pat_ID= as.factor(pat_ID))
+ann_cols_tile <- ann_cols_tile %>% mutate(pat_ID= factor(pat_ID, levels = fivecl_pat$value))
+
+CCP_Groups_Heatmap_plot <- 
+  ann_cols_tile %>% 
+  mutate(PG = as.factor(PG)) %>%
+  mutate(PG = factor(PG, levels = c("1", "2", "3", "5", "6", "4") )) %>%
+  ggplot(aes(pat_ID, Alteration, fill=alt )) + 
+  geom_tile(color="black") +
+  theme( axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank(),
+         panel.grid = element_blank(), panel.background = element_blank(), axis.title.y = element_blank(),
+         strip.background = element_rect(colour = "black", fill="white") ) +
+  scale_fill_manual(na.value = "white", 
+                    values=c(colors_CCP,"#FFA500","#0571b0", "#d4efff", "#ffefd1", "#ffd6dd" , "#ca0020",  
+                             "gray40", "grey80")) +
+  xlab(element_blank()) + facet_grid(~PG, scales = "free", space = "free_x") 
+
+CCP_Groups_Heatmap_plot
+```
+
+### What are the cluster?
+#### Mutational frequencies within a group
+##### Trisomy 12
+```{r consensus clustering identify groups tris, cache=TRUE, dependson="consensus clustering", dev=c("png","pdf"), message=FALSE}
+colData(multiomics_MAE) %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG) %>%
+  dplyr::select(trisomy12) %>% table() %>%
+  as_tibble() %>%
+  spread(trisomy12, n) %>%
+  mutate(tris_perc=`1`/(`1`+`0`))
+
+fp <- tibble("group"=integer(), "p"=numeric(), "odds_ratio"=numeric())
+for(i in 1:6){
+  ftest <- colData(multiomics_MAE) %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  mutate("group"=PG==i) %>%
+  mutate(trisomy12=as.factor(trisomy12), "group"=as.factor(group)) %>%
+  mutate(trisomy12=factor(trisomy12, levels = c(1,0)), group=factor(group, levels = c("TRUE", "FALSE"))) %>%
+  group_by(group) %>%
+  dplyr::select(trisomy12) %>% table() %>%
+  fisher.test(alternative = "greater")
+  fp[i,"group"] <- i
+  fp[i,"p"] <- ftest$p.value
+  fp[i,"odds_ratio"] <- unname(ftest$estimate)
+}
+fp <- fp %>% mutate(padj=p.adjust(p, method = "BH") , sign=stars.pval(padj)) 
+fp
+print(paste( "Groups", paste((fp %>% filter(sign != " ", odds_ratio>1) %>% .$group ) , collapse = ","), "are enriched for trisomy12"))
+```
+
+##### IGHV
+```{r consensus clustering identify groups ighv, cache=TRUE, dependson="consensus clustering", dev=c("png","pdf"), message=FALSE}
+# IGHV
+colData(multiomics_MAE) %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG) %>%
+  dplyr::select(IGHV) %>% table() %>%
+  as_tibble() %>%
+  spread(IGHV, n) %>%
+  mutate(M_perc=M/(M+U))
+
+fp <- tibble("group"=integer(), "p"=numeric(), "odds_ratio"=numeric())
+for(i in 1:6){
+  ftest <- colData(multiomics_MAE) %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG==i) %>%
+  dplyr::select(IGHV) %>% table() %>%
+  fisher.test()
+  fp[i,"group"] <- i
+  fp[i,"p"] <- ftest$p.value
+  fp[i,"odds_ratio"] <- unname(ftest$estimate)
+}
+fp <- fp %>% mutate(padj=p.adjust(p, method = "BH") , sign=stars.pval(padj)) 
+fp
+print(paste( "Groups", paste((fp %>% filter(sign != " ", odds_ratio>1) %>% .$group ) , collapse = ","), "are enriched for IGHV UM"))
+print(paste( "Groups", paste((fp %>% filter(sign != " ", odds_ratio<1) %>% .$group ) , collapse = ","), "are enriched for IGHV M"))
+```
+
+##### Tumor suppressors
+```{r consensus clustering identify groups tumor suppressors, cache=TRUE, dependson="consensus clustering", dev=c("png","pdf"), message=FALSE}
+wideFormat(multiomics_MAE[c("del11q", "ATM") ,,], colDataCols = "PG") %>% as_tibble() %>%
+  mutate(ATM_mut = if_else( (SNPs_ATM==1| chrom_abber_del11q ), 1, 0)) %>%
+  dplyr::select(primary, PG, ATM_mut) %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG) %>%
+  dplyr::select(ATM_mut) %>% table %>%
+  as_tibble() %>%
+  spread(ATM_mut, n) %>%
+  mutate(ATM_perc=`1`/(`1`+`0`))
+
+wideFormat(multiomics_MAE[c("del17p13", "TP53") ,,], colDataCols = "PG") %>% as_tibble() %>%
+  mutate(TP53_mut = if_else( (SNPs_TP53==1| chrom_abber_del17p13==1 ), 1, 0)) %>%
+  dplyr::select(primary, PG, TP53_mut) %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG) %>%
+  dplyr::select(TP53_mut) %>% table %>%
+  as_tibble() %>%
+  spread(TP53_mut, n) %>%
+  mutate(TP53_perc=`1`/(`1`+`0`))
+
+message("Mutation or loss of tumor suppressors ATM or TP53")
+wideFormat(multiomics_MAE[c("del17p13", "TP53", "del11q", "ATM") ,,], colDataCols = "PG") %>% as_tibble() %>%
+  mutate(TP53_mut = if_else( (SNPs_TP53==1| chrom_abber_del17p13==1 | SNPs_ATM==1| chrom_abber_del11q==1 ), 1, 0)) %>%
+  dplyr::select(primary, PG, TP53_mut) %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG) %>%
+  dplyr::select(TP53_mut) %>% table %>%
+  as_tibble() %>%
+  spread(TP53_mut, n) %>%
+  mutate(TP53_perc=`1`/(`1`+`0`))
+
+fp <- tibble("group"=integer(), "p"=numeric(), "odds_ratio"=numeric())
+for(i in 1:6){
+  ftest <- wideFormat(multiomics_MAE[ "TP53" ,,"SNPs"], colDataCols = "PG") %>% as_tibble() %>%
+  dplyr::select(primary, PG, SNPs_TP53) %>%
+  filter(!is.na(PG)) %>%
+  mutate("group"=PG==i) %>%
+  mutate(SNPs_TP53=as.factor(SNPs_TP53), "group"=as.factor(group)) %>%
+  mutate(SNPs_TP53=factor(SNPs_TP53, levels = c(1,0)), group=factor(group, levels = c("TRUE", "FALSE"))) %>%
+  group_by(group) %>%
+  dplyr::select(SNPs_TP53) %>% table %>%
+  fisher.test(alternative = "greater")
+  fp[i,"group"] <- i
+  fp[i,"p"] <- ftest$p.value
+  fp[i,"odds_ratio"] <- unname(ftest$estimate)
+}
+fp <- fp %>% mutate(padj=p.adjust(p, method = "BH") , sign=stars.pval(padj)) 
+fp
+print(paste( "Groups", paste((fp %>% filter(sign != " ", odds_ratio>1) %>% .$group ) , collapse = ","), "are enriched for TP53 mutations"))
+
+fp <- tibble("group"=integer(), "p"=numeric(), "odds_ratio"=numeric())
+for(i in 1:6){
+  ftest <- wideFormat(multiomics_MAE[ "ATM" ,,"SNPs"], colDataCols = "PG") %>% as_tibble() %>%
+  dplyr::select(primary, PG, SNPs_ATM) %>%
+  filter(!is.na(PG)) %>%
+  mutate("group"=PG==i) %>%
+  mutate(SNPs_ATM=as.factor(SNPs_ATM), "group"=as.factor(group)) %>%
+  mutate(SNPs_ATM=factor(SNPs_ATM, levels = c(1,0)), group=factor(group, levels = c("TRUE", "FALSE"))) %>%
+  group_by(group) %>%
+  dplyr::select(SNPs_ATM) %>% table %>%
+  fisher.test(alternative = "greater")
+  fp[i,"group"] <- i
+  fp[i,"p"] <- ftest$p.value
+  fp[i,"odds_ratio"] <- unname(ftest$estimate)
+}
+fp <- fp %>% mutate(padj=p.adjust(p, method = "BH") , sign=stars.pval(padj)) 
+fp
+print(paste( "No Groups are enriched for ATM mutations"))
+```
+
+##### SF3B1
+```{r consensus clustering identify groups SF3B1, cache=TRUE, dependson="consensus clustering", dev=c("png","pdf"), message=FALSE}
+wideFormat(multiomics_MAE[c("SF3B1"),,], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  group_by(PG) %>%
+  dplyr::select(SNPs_SF3B1) %>% table() %>%
+  as_tibble() %>%
+  spread(SNPs_SF3B1, n) %>%
+  mutate(SF3B1_perc=`1`/(`1`+`0`))
+
+fp <- tibble("group"=integer(), "p"=numeric(), "odds_ratio"=numeric())
+for(i in 1:6){
+  ftest <- wideFormat(multiomics_MAE[ "SF3B1" ,,"SNPs"], colDataCols = "PG") %>% as_tibble() %>%
+  dplyr::select(primary, PG, SNPs_SF3B1) %>%
+  filter(!is.na(PG)) %>%
+  mutate("group"=PG==i) %>%
+  mutate(SNPs_SF3B1=as.factor(SNPs_SF3B1), "group"=as.factor(group)) %>%
+  mutate(SNPs_SF3B1=factor(SNPs_SF3B1, levels = c(1,0)), group=factor(group, levels = c("TRUE", "FALSE"))) %>%
+  group_by(group) %>%
+  dplyr::select(SNPs_SF3B1) %>% table %>%
+  fisher.test(alternative = "greater")
+  fp[i,"group"] <- i
+  fp[i,"p"] <- ftest$p.value
+  fp[i,"odds_ratio"] <- unname(ftest$estimate)
+}
+fp <- fp %>% mutate(padj=p.adjust(p, method = "BH") , sign=stars.pval(padj)) 
+fp
+print(paste( "No groups are enriched for SF3B1 mutations"))
+```
+
+#### Expression of individual proteins across groups
+```{r consensus clustering identify groups, cache=TRUE, dependson="consensus clustering", dev=c("png","pdf")}
+longFormat(multiomics_MAE["TP53",,"proteomics"], colDataCols = "PG") %>% 
+  as_tibble() %>% filter(!is.na(PG)) %>% 
+  ggplot(aes(PG, value, group=PG, fill=PG)) + 
+  geom_boxplot() + geom_beeswarm() + 
+  stat_compare_means(method = "anova", label.y = 1.5) + 
+  facet_wrap(~rowname) + pp_sra_noguides +
+  stat_compare_means(method = "t.test", ref.group = ".all.", label = "p.signif", label.y =1.4, hide.ns = T)+
+  scale_fill_manual(values = colors_CCP)
+
+longFormat(multiomics_MAE["ZAP70",,"proteomics"], colDataCols = "PG") %>% 
+  as_tibble() %>% filter(!is.na(PG)) %>% 
+  ggplot(aes(PG, value, group=PG, fill=PG)) + 
+  geom_boxplot() + geom_beeswarm() + 
+  stat_compare_means(method = "anova", label.y = 1.5) + 
+  facet_wrap(~rowname) + pp_sra_noguides +
+  stat_compare_means(method = "t.test", ref.group = ".all.", label = "p.signif", label.y = 1.4, hide.ns = T)+
+  scale_fill_manual(values = colors_CCP)
+
+SF3B1_CCP_P_plot <- longFormat(multiomics_MAE["SF3B1",,"proteomics"], colDataCols = "PG") %>% 
+  as_tibble() %>% filter(!is.na(PG)) %>% 
+  ggplot(aes(PG, value, group=PG, fill=PG)) + 
+  geom_boxplot() + geom_beeswarm() + 
+  ggtitle("SF3B1 protein abundance") + 
+  #scale_fill_manual(values=c("#0571b0", "#ca0020")) +
+  pp_sra +
+  ylab("Abundance of SF3B1 protein")+
+  #theme(legend.position = "bottom") +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     ref.group = ".all.", label.y = 0.3, hide.ns = TRUE)+
+  guides(fill=guide_legend(title="PG"))+
+  scale_fill_manual(values = colors_CCP)
+
+SF3B1_CCP_P_plot + theme(aspect.ratio=1) +
+  stat_compare_means(method = "anova", label.y = 0.32, hjust=0)
+
+longFormat(multiomics_MAE["SF3B1",,"proteomics"], colDataCols = "PG") %>% 
+  as_tibble() %>% filter(!is.na(PG)) %>% 
+  ggplot(aes(PG==5, value, group=PG==5, fill=PG==5)) + 
+  geom_boxplot() + geom_beeswarm() + 
+  facet_wrap(~rowname) + pp_sra_noguides +
+  stat_compare_means(method = "t.test",  label = "p.signif", hide.ns = T)+
+  scale_fill_manual(values = c("grey",colors_CCP[5]))+
+  xlab("Part of group 5")
+
+BRD9_CCP5_P_plot <- longFormat(multiomics_MAE["BRD9",,"proteomics"], colDataCols = "PG") %>% 
+  as_tibble() %>% filter(!is.na(PG)) %>% 
+  ggplot(aes(PG==5, value, group=PG==5, fill=PG==5)) + 
+  geom_boxplot() + geom_beeswarm() + 
+  pp_sra +
+  xlab("PG5") +
+  ylab("Protein abundance BRD9")+
+  guides(fill=guide_legend(title="PG5"))+
+  scale_fill_manual(values = c("grey", colors_CCP[5]))
+
+BRD9_CCP5_P_plot + theme(aspect.ratio=1) +
+  stat_compare_means( hjust=0) +
+  ggtitle("BRD9 protein abundance") 
+```
+
+##### Non-trisomy12 patients in group 1
+```{r consensus clustering identify groups 2}
+message("Do the patients in group 1 which do not have trisomy12 a subclone with trisomy 12?")
+metadata(multiomics_MAE)$fish_df_clonsizes["trisomy12", colData(multiomics_MAE) %>% as_tibble() %>% filter(PG==1, trisomy12==0) %>% .$patient_ID]
+```
+
+#### MOFA latent factors
+```{r consensus clustering identify groups MOFA LF, cache=TRUE, dependson="consensus clustering", dev=c("png","pdf"), warning=FALSE}
+# new LFs
+LF_path <- "/Volumes/sd17b003/Sophie/Eva/Master_thesis/data/MOFA_models"
+load(file.path( LF_path, "proteomics_model_noDrug_factors.RData"))
+proteomics_model_noDrug_factors[1:5,1:5]
+```
+
+##### t-SNE on latent factors and see whether groups can be retrieved
+```{r consensus clustering identify groups MOFA LF tsne, dependson=c("consensus clustering","consensus clustering identify groups MOFA LF"), dev=c("png","pdf"), warning=FALSE  }
+patLFs <- names(which((proteomics_model_noDrug_factors[na.omit(names(multiomics_MAE@colData$PG)),] %>% is.na() %>% rowSums() ) < 1 ))
+
+set.seed(777)
+tnseLF <- Rtsne(proteomics_model_noDrug_factors[patLFs, ] , perplexity = 10 )
+tnseLF_df <- tnseLF$Y %>% as.data.frame() %>% as_tibble()
+tnseLF_df$pat_ID <- patLFs
+tnseLF_df$PG <- multiomics_MAE@colData[patLFs,]$PG
+tnse_CCP_LF <- tnseLF_df %>% ggplot(aes(V1, V2, color=PG)) + pp_sra + scale_color_manual(values = colors_CCP)
+tnse_CCP_LF + geom_point(size=3)
+```
+
+### Perform clustering without plasma proteins as quality control
+
+This is to ensure that the clusters are not cause by contamination with plasma proteins
+```{r consensus clustering perform without plasma, cache=TRUE, dev=c("png","pdf"), fig.height=11.5, fig.width=12, dependson="analysis proteomics sample-sample correlation"}
+title=file.path(consensus_path, "Consensus_NoPlasmaProteins")
+d <- assay(multiomics_MAE[prot_few_nas,,"proteomics"])
+
+d <- d[-na.omit(match(plasma_proteins$symbol, rownames(d))),]
+results_noPlasma = ConsensusClusterPlus(d,maxK=10,reps=1000,pItem=0.8,pFeature=1,
+                               title=title,clusterAlg="hc",distance="pearson",seed=2019,plot="pdf")
+icl_noPlasma = calcICL(results_noPlasma,title=title,plot="pdf")
+
+plasma_groups <- results_noPlasma[[clnr]][["consensusClass"]]
+plasma_groups[results_noPlasma[[clnr]][["consensusClass"]] == 2] <- 1
+plasma_groups[results_noPlasma[[clnr]][["consensusClass"]] == 5] <- 2
+plasma_groups[results_noPlasma[[clnr]][["consensusClass"]] == 4] <- 3
+plasma_groups[results_noPlasma[[clnr]][["consensusClass"]] == 1] <- 4
+plasma_groups[results_noPlasma[[clnr]][["consensusClass"]] == 6] <- 5
+plasma_groups[results_noPlasma[[clnr]][["consensusClass"]] == 3] <- 6
+
+
+stopifnot(all( names(results[[clnr]][["consensusClass"]])== names(plasma_groups )))
+cbind("PG" = CCP_group5, "No_plasma"= plasma_groups) %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  arrange(PG) %>%
+  mutate(rowname= as.factor(rowname)) %>%
+  mutate(rowname = factor(rowname, levels = rowname)) %>%
+  gather(key = "clustering", "group", -rowname) %>%
+  mutate(group = as.factor(group)) %>%
+  ggplot(aes(clustering, rowname, fill= group )) +
+  geom_tile() + pp_sra +
+  scale_fill_manual(values = colors_CCP)
+```
+
+### Consensus clustering RNA
+#### Perform clustering
+```{r consensus clustering RNA perform, cache=TRUE, dev=c("png","pdf"), fig.height=9, fig.width=12}
+title=file.path(consensus_path, "Consensus/RNA")
+r <- assay(multiomics_MAE[,,"RNAseq_norm"]) %>% as.matrix()
+r <- r[, -which(colnames(r) == "OMZP0042")] # This sequencing run shows a very large batch effect as the read counts are much higher
+r <- r[ rownames(r)[ rowVars(r) >= (rowVars(r) %>% sort(decreasing = TRUE) )[1000]], ]
+
+results_RNA = ConsensusClusterPlus(r,maxK=10,reps=1000,pItem=0.8,pFeature=1,
+                               title=title,clusterAlg="hc",distance="pearson",seed=1262118388.71279,plot="pdf")
+icl_RNA = calcICL(results_RNA,title=title,plot="pdf")
+```
+
+##### Consensus cluster groups
+```{r consensus clustering RNA consensus groups, cache=TRUE, dev=c("png","pdf"), fig.height=9, fig.width=12, dependson="consensus clustering RNA perform"}
+CCP_group6_RNA <- results_RNA[[5]][["consensusClass"]]
+
+RNA_sixcl_pat <- colnames(r)
+
+RNA_sixcl_pat <- RNA_sixcl_pat %>% enframe()
+RNA_sixcl_anno <- wideFormat(multiomics_MAE[c("IGHV_mutated", "trisomy12", "TP53", "del17p13", "ATM", "SF3B1", "del11q" ), , ], 
+                             colDataCols = c("doehner_groups", "PG")) %>% 
+  as_tibble() %>% dplyr::select(-proteomics_ATM, -proteomics_SF3B1, -proteomics_TP53)
+RNA_sixcl_pat <- left_join(left_join(RNA_sixcl_pat, RNA_sixcl_anno, by=c("value"="primary")), 
+                        enframe(as.factor(CCP_group6_RNA), value = "CCP6_RNA", name = "value"), 
+                        by="value")
+RNA_sixcl_pat <- RNA_sixcl_pat %>% as.data.frame()
+
+RNA_sixcl_pat <- RNA_sixcl_pat  %>% arrange(CCP6_RNA, chrom_abber_trisomy12, health_record_bin_IGHV_mutated,SNPs_ATM, chrom_abber_del11q, chrom_abber_del17p13, SNPs_TP53 , doehner_groups)
+rownames(RNA_sixcl_pat) <- RNA_sixcl_pat$value
+
+
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+```
+
+##### Comparison Consensus groups RNA and protein
+```{r consensus clustering RNA and protein comparison}
+tmp <- colData(multiomics_MAE) %>% as_tibble %>%
+  dplyr::select(PG, CCP6_RNA) %>%
+  table() %>% as_tibble() 
+
+n_CCP <- tmp %>% group_by(PG) %>% dplyr::summarise(n=sum(n)) %>% mutate(CCP6_RNA="all")
+n_CCP6_RNA <- tmp %>% group_by(CCP6_RNA) %>% dplyr::summarise(n=sum(n)) %>% mutate(PG="all")
+
+tmp <- bind_rows(tmp, n_CCP, n_CCP6_RNA)
+  
+flow_CCP_plot <- 
+  tmp %>% filter(CCP6_RNA!= "all", PG!="all") %>%
+  mutate(CCP6_RNA = as.factor(paste0("RNA", CCP6_RNA))) %>%
+  mutate(CCP6_RNA=factor(CCP6_RNA, levels = c("RNA3","RNA4",  "RNA1","RNA2", "RNA5") )) %>%
+  mutate(PG=as.factor(paste0("PG",PG))) %>%
+  as.data.frame() %>%
+  ggplot(aes(axis1=PG, axis2=CCP6_RNA, y=n )) +
+  geom_flow(aes(fill=PG)) +
+  geom_stratum(fill=c(rev(colors_CCP),"grey90", "grey90", "grey90", "grey90", "grey90"), color="grey50") +
+  scale_x_discrete(limits = c("Protein", "RNA")) +
+  pp_sra+
+  scale_fill_manual(values = colors_CCP) +
+  theme(axis.title.y = element_blank(), panel.background = element_blank(), 
+        axis.text.y = element_blank(), axis.ticks = element_blank(), axis.line.x = element_blank(),
+        panel.border = element_blank()) 
+
+flow_CCP_plot + geom_text(stat = "stratum", label.strata = TRUE)
+```
+
+# Save objects from this script which are needed again later
+```{r}
+save(CCP_group5, CCP_group6_RNA, prot_cor_meta,
+     file = "/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/Robjects/CLL_Proteomics_ConsensusClustering.RData")
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```

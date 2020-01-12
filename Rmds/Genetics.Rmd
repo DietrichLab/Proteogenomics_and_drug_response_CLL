@@ -1,0 +1,330 @@
+---
+title: "Analysis CLL Proteomics - Final data Genetics"
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(gtools)
+library(openxlsx)
+library(pheatmap)
+library(reshape2)
+library(progress)
+library(Matrix)
+library(Hmisc)
+library(lemon)
+library(ggpubr)
+library(effsize)
+library(ggbeeswarm)
+library(ggfortify)
+library(ggpmisc)
+library(ggrepel)
+library(readxl)
+library(DESeq2)
+library(TOSTER)
+library(tidyverse)
+library(vsn)
+library(fdrtool)
+library(limma)
+library(apeglm)
+library(IHW)
+library(Rtsne)
+library(biomartr)
+library(biomaRt)
+library(MultiAssayExperiment)
+library(PMA)
+library(gplots)
+library(RColorBrewer)
+library(grid)
+library(ConsensusClusterPlus)
+library(survival)
+library(survminer)
+library(cowplot)
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("/Volumes/sd17b003/Sophie/Analysis/Screen_analysis/Figure_layouts.R")
+load("/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/Robjects/CLL_Proteomics_Setup.RData")
+load("/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Proteomics_Git/Robjects/CLL_Proteomics_ConsensusClustering.RData")
+```
+
+```{r Add CCP group}
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+```
+
+# Analysis
+## Associations of protein abundance with genetic alterations
+## Wilcox test
+### Function
+```{r analysis proteomics ttest function,  eval=TRUE, echo=TRUE, cache=TRUE, dev=c("png","pdf")}
+wilcox_proteins_any <- function(g, alteration, plot=FALSE, output=TRUE){
+  if("SNPs" %in% (experiments(multiomics_MAE[alteration,,]) %>% names()) ){
+    ty="SNPs_"}else if("chrom_abber" %in% (experiments(multiomics_MAE[alteration,,]) %>% names() ) ){
+      ty="chrom_abber_"}else if("health_record_bin" %in% (experiments(multiomics_MAE[alteration,,]) %>% names() ) ){
+        ty="health_record_bin_"}
+  dat_g <- wideFormat(multiomics_MAE[c(g , alteration),,] ) %>% as_tibble() 
+  dat_g <- dat_g %>% mutate(alt =as.logical(get(paste0(ty, alteration), envir=as.environment(dat_g))))
+  
+  if(grepl("ENSG", g)){
+    assay_data="RNAseq_norm_"
+    cap <- metadata(multiomics_MAE)$gene_symbol_mapping %>% filter(ensembl_gene_id==g) %>% .$hgnc_symbol
+    col_b <- "#92c5de"
+    col_r <- "#f4a582"
+    cap_y <- paste("Transcript abundance", cap)
+    }else{
+    assay_data="proteomics_"
+    cap <- g
+    col_b <- "#0571b0"
+    col_r <- "#ca0020"
+    cap_y <- paste("Protein abundance", cap)
+  }
+  
+  wt <- dat_g %>% filter(alt==0) %>% .[,paste0(assay_data, g)] %>% unlist
+  mut <- dat_g %>% filter(alt==1) %>% .[,paste0(assay_data, g)] %>% unlist
+  alt_lab <- alteration
+  alt_lab <- gsub("_mutated", "", alt_lab)
+  wt_lab <- "wt"
+  mut_lab <- "mut"
+  if(alt_lab=="IGHV"){
+    wt_lab="U-CLL"
+  mut_lab="M-CLL"}
+  
+  wx.test <- wilcox.test(wt, mut)
+  if(plot==TRUE){
+    p <- dat_g %>% filter(!is.na(alt )) %>% 
+      ggplot(aes_string("alt", paste0(assay_data,g), fill="alt" )) + 
+      geom_boxplot() + geom_beeswarm() + 
+      xlab(alt_lab) +
+      scale_x_discrete(labels=c(wt_lab, mut_lab)) +
+      ylab(cap_y)+
+      pp_sra + 
+      scale_fill_manual(values = c(col_b,col_r)) 
+      
+    print(p+theme(aspect.ratio=2)+ theme(legend.position = 'none') +
+      stat_compare_means(method = "wilcox", label = "p.signif", 
+                         comparisons = list(c("TRUE","FALSE"))) )
+    print(paste("pvalue",wx.test$p.value) )
+  }
+  if(output==TRUE){return(c(g,  alteration, length(wt), length(mut), wx.test$p.value))
+    }else if(all(plot==TRUE, output=="plot")){return(p)}
+}
+```
+
+```{r analysis proteomics ttest, fig.height=4, fig.width=5, cache=TRUE, dev=c("png","pdf"), dependson="analysis proteomics ttest function", warning=FALSE, message=FALSE}
+ZAP70_P_plot <- wilcox_proteins_any(g="ZAP70", plot = TRUE, output = "plot", alteration="IGHV_mutated")
+ZAP70_R_plot <- wilcox_proteins_any(g="ENSG00000115085", plot = TRUE, output = "plot", alteration="IGHV_mutated")
+wilcox_proteins_any(g="BTK", plot = TRUE, alteration="IGHV_mutated")
+wilcox_proteins_any(g="BTK", plot = TRUE, alteration="trisomy12")
+ATM_P_plot <- wilcox_proteins_any(g="ATM", plot = TRUE, output = "plot", alteration="ATM")
+ATM_R_plot <- wilcox_proteins_any(g="ENSG00000149311", plot = TRUE, output = "plot", alteration="ATM")
+TP53_P_plot <- wilcox_proteins_any(g="TP53", plot = TRUE, output = "plot", alteration="TP53")
+TP53_R_plot <- wilcox_proteins_any(g="ENSG00000141510", plot = TRUE, output = "plot", alteration="TP53")
+SF3B1_P_plot <- wilcox_proteins_any(g="SF3B1", plot = TRUE, alteration="SF3B1", output = "plot")
+wilcox_proteins_any(g="ENSG00000115524", plot = TRUE, alteration="TP53")
+XPO1_P_plot <- wilcox_proteins_any(g="XPO1", plot = TRUE, output = "plot", alteration="XPO1")
+XPO1_R_plot <- wilcox_proteins_any(g="ENSG00000082898", plot = TRUE, output = "plot", alteration="XPO1")
+
+IGHM_P_plot <- wilcox_proteins_any(g="IGHM", plot = TRUE, alteration="IGHV_mutated", output = "plot")
+```
+
+### IGHM and ZAP70 levels only within PG5
+```{r}
+PG5_IGHV_ZAP60IGHM_scatter <- wideFormat(multiomics_MAE[c("ZAP70", "IGHM" , "IGHV_mutated"),,], colDataCols = "PG" ) %>% as_tibble() %>%
+  filter(PG==5, health_record_bin_IGHV_mutated %in% c(1,0) ) %>%
+  mutate(IGHV=as.factor(if_else(health_record_bin_IGHV_mutated==0, "U-CLL", "M-CLL"))) %>%
+  ggplot(aes(proteomics_ZAP70, proteomics_IGHM, color=IGHV)) +
+  geom_point() + pp_sra +
+  scale_color_manual(values = c("#ca0020", "#0571b0")) +
+  xlab("Protein abundance ZAP70") +
+  ylab("Protein abundance IGHM") 
+PG5_IGHV_ZAP60IGHM_scatter
+```
+
+## Chromosome position and protein abundance
+```{r analysis proteomics position chromosome tris12, fig.height=8, warning=FALSE, eval=TRUE, echo=TRUE, cache=TRUE, dev=c("png","pdf")}
+plot_chromosome_theme <- list(
+    coord_cartesian(ylim=c(-0.7,0.7)),
+    facet_wrap(~paste("chromosome",chromosome_name), scales = "free_x"),
+    ylab("log2 norm. protein abundance"),
+    xlab("Protein location on chromosome"),
+    scale_color_manual(values=c("#0571b0", "#ca0020", "grey"))
+)
+```
+
+```{r analysis proteomics position chromosome, warning=FALSE, eval=TRUE, include=TRUE, cache=TRUE, dev=c("png","pdf"), dependson="analysis proteomics position chromosome tris12"}
+Chr12_P_plot <- proteomics_tbl_meta_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("12")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.68, ymax=0.68, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot +  theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr11_P_plot <- proteomics_tbl_meta_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("11")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del11q), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra_noguides +
+  ggtitle("del11q")+
+  geom_rect(xmin = 97400000, ymin=-0.68, ymax=0.68, xmax=110600000, color="gray40", size=1.5,  fill=NA)
+Chr11_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr13_P_plot <- proteomics_tbl_meta_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("13")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del13q14), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra_noguides +
+  ggtitle("del13q")+
+  geom_rect(xmin = 47000000,ymin=-0.68, ymax=0.68, xmax=51000000, color="gray40", size=1.5,  fill=NA)
+Chr13_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr17_P_plot <- proteomics_tbl_meta_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("17")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del17p13), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("del17p")+
+  geom_rect(xmin = 0, ymin=-0.68, ymax=0.68, xmax=10800000, color="gray40", size=1.5,  fill=NA)
+Chr17_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr8_P_plot <- proteomics_tbl_meta_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("8")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_gain8q24), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("gain8q24")+
+  geom_rect(xmin = 117700001, ymin=-0.68, ymax=0.68, xmax=146364022, color="gray40", size=1.5,  fill=NA)
+Chr8_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+```
+
+## Chromosome position and RNA
+```{r analysis RNA position chromosome tris12, fig.height=10, warning=FALSE, eval=TRUE, echo=TRUE, cache=TRUE, dev=c("png","pdf")}
+plot_chromosome_theme_RNA <- list(
+    coord_cartesian(ylim=c(0.75,1.25)),
+    facet_wrap(~paste("chromosome",chromosome_name), scales = "free_x"),
+    ylab("log10 norm. RNA counts"),
+    xlab("Gene location on chromosome"),
+    scale_color_manual(values=c("#92c5de", "#f4a582", "grey"))
+)
+
+RNA_biomart<- left_join(
+  left_join((longFormat(multiomics_MAE[,,"RNAseq_norm"] ) %>% as_tibble()), 
+                                         metadata(multiomics_MAE)$gene_symbol_mapping[c(1,2,3,5:7)], 
+                                         by=c("rowname"="ensembl_gene_id")),
+  proteomics_tbl_meta_biomart_chrab, by=c("primary"))
+RNA_biomart <- left_join( left_join(RNA_biomart,
+          proteomics_tbl_meta_biomart_SNP, by=c("primary")),
+          proteomics_tbl_meta_biomart_health, by=c("primary"))
+```
+
+```{r analysis RNA position chromosome, warning=FALSE, eval=TRUE, include=TRUE, cache=TRUE, dev=c("png","pdf"), dependson="analysis RNA position chromosome tris12"}
+# Trisomy 12
+Chr12_R_plot <- RNA_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("12")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme_RNA +
+  pp_sra +
+  ggtitle("trisomy12") +
+  coord_cartesian(ylim=c(0.95,1.1)) +
+  geom_rect(xmin = 0, ymin=0.95, ymax=1.1, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+# del11q
+Chr11_R_plot <- RNA_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("11")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del11q), span=0.5, method = "loess") +
+  plot_chromosome_theme_RNA +
+  pp_sra_noguides +
+  ggtitle("del11q")+
+  coord_cartesian(ylim=c(0.95,1.1)) +
+  geom_rect(xmin = 97400000, ymin=0.95, ymax=1.1, xmax=110600000, color="gray40", size=1.5,  fill=NA)
+Chr11_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+# del13q
+Chr13_R_plot <- RNA_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("13")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del13q14), span=0.5, method = "loess") +
+  plot_chromosome_theme_RNA +
+  pp_sra_noguides +
+  ggtitle("del13q")+
+  coord_cartesian(ylim=c(0.95,1.1)) +
+  geom_rect(xmin = 47000000, ymin=0.95, ymax=1.1, xmax=51000000, color="gray40", size=1.5,  fill=NA)
+Chr13_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+# del17p
+Chr17_R_plot <- RNA_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("17")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del17p13), span=0.5, method = "loess") +
+  plot_chromosome_theme_RNA +
+  pp_sra +
+  ggtitle("del17p")+
+  coord_cartesian(ylim=c(0.95,1.1)) +
+  geom_rect(xmin = 0, ymin=0.95, ymax=1.1, xmax=10800000, color="gray40", size=1.5,  fill=NA)
+Chr17_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr8_R_plot <- RNA_biomart %>%
+  filter( !is.na(value), 
+          chromosome_name %in% c("8")) %>%
+  ggplot(aes(start_position, value, group=primary)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_gain8q24), span=0.5, method = "loess") +
+  plot_chromosome_theme_RNA +
+  pp_sra +
+  ggtitle("gain8q24")+
+  coord_cartesian(ylim=c(0.95,1.1)) +
+  geom_rect(xmin = 117700001, ymin=0.95, ymax=1.1, xmax=146364022, color="gray40", size=1.5,  fill=NA)
+Chr8_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```
