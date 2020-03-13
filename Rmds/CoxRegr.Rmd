@@ -1,0 +1,356 @@
+---
+title: "Analysis CLL Proteomics - Cox Regression TTT"
+author: Roider Tobias
+date: "`r doc_date()`"
+output: 
+    BiocStyle::html_document:
+        toc: true
+        self_contained: true
+        toc_float: true
+        code_download: true
+        df_print: paged
+        toc_depth: 4
+    BiocStyle::pdf_document:
+        toc: true
+        toc_depth: 4
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+options(digits=3, width=80)
+opts_chunk$set(echo=TRUE,tidy=FALSE,include=TRUE,
+               dev=c('png'), fig.small=FALSE,
+               dpi = 300, warning = FALSE, message = FALSE)
+```
+
+# Load packages & Input
+```{r message=FALSE, warning=FALSE}
+
+library(survival)
+library(maxstat)
+library(survminer)
+library(tidyverse)
+library(MultiAssayExperiment)
+library(EnvStats)
+library(readxl)
+
+source("data/Figure_layouts.R")
+load("data/CLL_Proteomics_Setup.RData")
+load("data/CLL_Proteomics_ConsensusClustering.RData")
+load("data/proteomics_model_noDrug_factors.RData")
+
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+```
+
+# Define functions
+This functions extract information from cox model objects
+```{r message=FALSE, warning=FALSE}
+
+Extract.Cox <- function(x)
+        { 
+        x <- summary(x)
+        p.value<-signif(x$coefficients[1, 5], digits=2)
+        beta<-signif(x$coefficients[1, 1], digits=2);#coeficient beta
+        HR <-signif(x$coefficients[1, 2], digits=2);#exp(beta)
+        wald.test<-signif(x$waldtest["test"], digits=2)
+        HR.confint.lower <- signif(x$conf.int[1 ,"lower .95"], 2)
+        HR.confint.upper <- signif(x$conf.int[1 ,"upper .95"], 2)
+        HR <- paste0(HR, " (", 
+                     HR.confint.lower, "-", HR.confint.upper, ")")
+        res<-c(beta, HR, wald.test, p.value)
+        names(res)<-c("beta", "HR (95% CI for HR)", "wald.test", 
+                      "p.value")
+        return(res)
+        }
+
+```
+
+This function calculate univeriate/multivariate cox models
+```{r}
+
+Calc.Cox <- function(formula, covariates, dataframe, MultiVars=NULL) {
+
+  if(!is_empty(MultiVars)) {z <- paste(" +", MultiVars, collapse="")}
+  else{z <-  NULL}
+  
+  # Define formulas for univariate model
+  cox_formulas <- sapply(covariates, 
+                     function(y) as.formula(paste(formula, y, z)))
+  
+  # Calculate univariate model for all formulas
+  cox_models <- lapply(cox_formulas, 
+                      function(z){coxph(z, data = dataframe)})
+  
+  # Extract data from summary objects
+  cox_results <- lapply(cox_models, Extract.Cox)
+  
+  # Transform data to data frame
+  results <- t(as.data.frame(cox_results, check.names = FALSE)) %>% 
+    as.data.frame() 
+  results$p.value <- as.character(results$p.value) %>% as.numeric()
+  results$p.value_adj <- p.adjust(results$p.value, method = "BH")
+
+return(results)
+
+}
+
+```
+
+
+# Create lists for results
+```{r}
+Results <- list()
+```
+
+# Prepare data
+```{r}
+
+# Protein
+prot <- multiomics_MAE@ExperimentList$proteomics
+
+# Remove all proteins which harbor any NA
+prot <- prot[rowSums(is.na(prot))==0, ]
+
+# Remove '-' as it makes problems in formula objects
+rownames(prot) <- gsub(rownames(prot), pattern = "-", replacement = "_")
+```
+
+# Time to next treatment
+## Add parameters for cox model
+```{r message=FALSE, warning=FALSE}
+df <- as.data.frame(colData(multiomics_MAE))
+
+# Set 'time' either to observation time (w/o next treatment) or to actual time to next treatment
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df <- df %>% 
+  dplyr::rename(TTNT = timeDiff_TTNT_orig) %>%
+  mutate(time = ifelse(is.na(TTNT), ObsTime, TTNT), 
+         status = ifelse(is.na(TTNT), 1, 2))
+
+# Remove without any follow up
+df <- filter(df, ObsTime!=0) %>% filter(!treatment_status=="intreatment")
+```
+
+## Univariate analysis without regard to IGHV
+### Protein
+```{r message=FALSE, warning=FALSE}
+
+df_short <- filter(df, patient_ID %in% 
+                     colnames(multiomics_MAE@ExperimentList$proteomics))
+df_short <- dplyr::select(df_short, patient_ID, IGHV, trisomy12, time, status)
+
+# Merge protein data with TTNT within one data frame
+prot_surv <- t(prot) %>% as.data.frame() %>% 
+  rownames_to_column(var = "patient_ID") %>% 
+  right_join(df_short, by="patient_ID")
+
+print(nrow(prot_surv))
+
+# Apply Calc.Cox
+res_prot <- Calc.Cox(formula = 'Surv(time, status)~', 
+                     covariates = rownames(prot),
+                     dataframe = prot_surv)
+
+# Top 100 proteins (lowest p value)
+res_prot %>% rownames_to_column(var = "Symbol") %>% 
+  top_n(100, -p.value) %>% arrange(p.value) 
+
+# P value histogram
+hist(res_prot$p.value, breaks = 100)
+
+# Save object in list
+Results[["Univ.prot_TTNT"]] <- res_prot
+
+message("Number proteins significant (FDR = 5%) associated with TTNT")
+sum(res_prot$p.value_adj < 0.05)
+message("Percent proteins significant (FDR = 5%) associated with TTNT")
+sum(res_prot$p.value_adj < 0.05) / length(res_prot$p.value_adj)
+```
+
+### Laten factors derived from MOFA
+#### Without drug response
+```{r}
+# Filter for patients with complete data
+df_short <- 
+  filter(df, patient_ID %in% rownames(proteomics_model_noDrug_factors)) %>% 
+  dplyr::select(patient_ID, time, status, IGHV, trisomy12)
+
+# Merge protein data with TTNT within one data frame
+LF_surv <- proteomics_model_noDrug_factors %>% as.data.frame() %>% 
+  rownames_to_column(var = "patient_ID") %>% 
+  right_join(df_short, by="patient_ID")
+
+print(nrow(LF_surv))
+
+# Apply Calc.Cox
+res_LF <- Calc.Cox(formula = 'Surv(time, status)~', 
+                     covariates = colnames(proteomics_model_noDrug_factors),
+                     dataframe = LF_surv)
+
+# Top 100 genes (lowest p value)
+res_LF %>% 
+  rownames_to_column(var = "LF") %>%
+  arrange(p.value)
+
+# Save object in list
+Results[["Univ.LF_TTNT"]] <- res_LF
+
+```
+
+# Kaplan Meier curves
+```{r}
+KM.Plot <- function(dataset, name, plot=TRUE) {
+  
+  # Filter for patients with complete data
+  df_short <- df %>%
+    filter(patient_ID %in% rownames(dataset)) %>% 
+    dplyr::select(patient_ID, time, status)
+  
+  # Merge protein data with TTNT within one data frame
+  df_surv <- dataset %>% 
+    as.data.frame() %>% 
+    rownames_to_column(var = "patient_ID") %>% 
+    right_join(df_short, by="patient_ID") %>% 
+    dplyr::select(time, status, name) %>%
+    dplyr::rename(Factor = name) %>%
+    mutate(BinFactor = Factor)
+      
+  formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+  # Test if dataset is discrete or continuous
+  x1 <- dataset %>% as.numeric() %>% unique() %>% na.omit() %>% length()
+  x2 <- dataset %>% as.numeric() %>% na.omit() %>% length()
+  
+  # If dataset is continuous, find optimal Cut-Off
+  if(x1/x2 > 0.1) {
+    
+      mxs.obj <- maxstat.test(Surv(time, status) ~ Factor, data=df_surv,
+                              smethod="LogRank", pmethod="exactGauss", 
+                              minprop = 0.25, maxprop=0.75, abseps=0.01)
+      
+      df_surv <- mutate(df_surv, BinFactor=ifelse(Factor > mxs.obj$estimate, "High", "Low"))
+      
+  }
+  
+  df_surv$time <- df_surv$time/365
+  
+  fit <- survfit(Surv(time, status) ~ BinFactor, data = df_surv)
+      
+  if(plot==TRUE)
+    {
+      surv_plot <- ggsurvplot(fit, data = df_surv, 
+                 pval = TRUE, 
+                 pval.size = 4,
+                 pval.coord = c(1800, 0.95),
+                 xlab = "Time in years",
+                 palette = c("#E7B800", "#2E9FDF"),
+                 legend.labs = gsub("BinFactor=", "", names(fit$strata) ),
+                 ylab="Treatment free survival",
+                 legend.title = name,
+                 legend = "top",
+                 ggtheme = theme_bw())
+      print(surv_plot)
+      return(surv_plot)
+     } else 
+       
+       { 
+         l <- list(fit, df_surv) 
+         names(l) <- c("fit", "df")
+         return(l)
+        }
+
+}
+
+```
+
+
+## TTNT
+### LFs
+```{r fig.small=T}
+df <- as.data.frame(colData(multiomics_MAE))
+
+# Set 'time' either to observation time (w/o next treatment) or to actual time to next treatment
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df <- df %>% 
+  dplyr::rename(TTNT = timeDiff_TTNT_orig) %>%
+  mutate(time = ifelse(is.na(TTNT), ObsTime, TTNT), 
+         status = ifelse(is.na(TTNT), 1, 2))
+
+# Remove without any follow up
+df <- filter(df, ObsTime!=0) %>% filter(!treatment_status=="intreatment")
+df_TTNT <-  df
+
+```
+
+## Correlate hazard ratios of signficantly associated proteins and transcripts
+```{r correlate hazard ratios}
+sig_prot_univ <- Results$Univ.prot_TTNT %>% as_tibble()
+sig_prot_univ$hgnc_symbol <- rownames(Results$Univ.prot_TTNT)
+```
+
+## BCR Protein Kaplan Meier Curves + SF3B1
+```{r}
+df <- df_TTNT
+PIK3CD_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "PIK3CD")
+PLCG2_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "PLCG2")
+```
+
+## Hazard ratios volcano plot
+```{r hazard ratios, dependson="correlate hazard ratios"}
+HR_BCR_volcano <- sig_prot_univ %>% 
+  separate(`HR (95% CI for HR)`, into=c("HR_prot", "95% CI for HR"), sep = " \\(") %>%
+  mutate(HR_prot=as.numeric(HR_prot), `95% CI for HR`=gsub("\\)", "", `95% CI for HR`) ) %>%
+  ggplot(aes(log2(HR_prot), -log10(p.value) )) +
+  geom_point(data = . %>% filter(p.value_adj >= 0.05), color="lightgray", alpha=0.5) +
+  geom_point(data = . %>% filter(p.value_adj < 0.05), color="#0571b0", alpha=0.5 ) +
+  geom_point(data = . %>% filter( hgnc_symbol %in% BCR_genes ), color="orange1" ) +
+  pp_sra 
+HR_BCR_volcano + ggtitle("Proteins ~ TTNT") + coord_cartesian(ylim=c(0.2,7.3)) +
+    ggrepel::geom_label_repel(data = . %>% filter(p.value_adj < 0.05, hgnc_symbol %in% BCR_genes), 
+            aes(label= hgnc_symbol), size=3)
+```
+
+## GSEA
+```{r}
+sig_prot_univ %>% transmute(hgnc_symbol, rank= base::rank(p.value, ties.method = "first") ) #%>% write.table("/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/GSEA_CLL_Proteomics/191125_TTNT_Protein_GSEAlist.rnk", quote = FALSE, row.names = FALSE, col.names = TRUE, sep = "\t")
+```
+
+# Figures for Publication
+## LFs and Hazard ratios
+```{r}
+LF_HR_plot <- Results[["Univ.LF_TTNT"]] %>%
+  separate(col = `HR (95% CI for HR)`, into = c("HR", "CI"), sep = "\\(" ) %>%
+  mutate(CI = gsub(")", "", CI )) %>%
+  separate(CI, into = c("lower_CI", "upper_CI"), sep = "-" ) %>%
+  mutate("Hazard ratio" = as.numeric(HR), lower_CI =  as.numeric(lower_CI), upper_CI= as.numeric(upper_CI), LF= rownames(.)) %>%
+  mutate("Latent factor" = as.factor(gsub("LF", "", LF ) )) %>%
+  mutate("Latent factor" = factor(`Latent factor`, levels = c(1:nrow(Results[["Univ.LF_TTNT"]])) ) ) %>% 
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" )) %>% 
+  ggplot(aes( `Latent factor`, `Hazard ratio` )) +
+  geom_point() +
+  geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= sig )) +
+  scale_color_manual(values = c("black", "blue")) +
+  pp_sra +
+  coord_flip(ylim = c(0.4, 2.8)) +
+  geom_hline(yintercept = 1, linetype= "dashed") 
+
+LF_HR_plot +
+  geom_text(y= 2.7, aes(label= p.value )) +
+  theme(legend.position = 'none') 
+```
+
+# Save important plots
+```{r save image}
+save(  HR_BCR_volcano, PIK3CD_surv_plot,  PLCG2_surv_plot, 
+  LF_HR_plot ,
+file = "RData_plots/CLL_Proteomics_TTNT_Plots.RData")
+```
+
+# Session Info
+```{r message=FALSE, warning=FALSE}
+sessionInfo()
+```
+

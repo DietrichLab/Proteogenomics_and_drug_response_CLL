@@ -1,0 +1,603 @@
+---
+title: "Analysis CLL Proteomics - Limma Proteomics"
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(gtools)
+library(pheatmap)
+library(Matrix)
+library(Hmisc)
+library(ggpubr)
+library(ggrepel)
+library(DESeq2)
+library(tidyverse)
+library(vsn)
+library(fdrtool)
+library(limma)
+library(apeglm)
+library(MultiAssayExperiment)
+library(gplots)
+library(matrixStats)
+library(DEqMS)
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("data/Figure_layouts.R")
+load("data/CLL_Proteomics_Setup.RData")
+load("data/CLL_Proteomics_ConsensusClustering.RData")
+```
+
+```{r Add CCP group}
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+```
+
+# Limma Proteomics and genetic alterations
+## Functions
+### Limma + DEQMS function
+```{r limma other mutations function DEQMS, include=TRUE, results="markup"}
+Calculate_Limma <- function(assay_data, mut){
+  # prepare assay data
+  assay_data[is.infinite((assay_data))] <- NA
+  is.na(assay_data) <- NA
+
+  stopifnot(mut %in% colnames(proteomics_tbl_meta_biomart))
+  # prepare row data
+  row_data <- left_join((rownames(assay_data) %>% enframe(value = "rowname")),
+              (proteomics_tbl_meta_biomart %>% 
+                dplyr::select(rowname, start_position, end_position, chromosome_name,  mean_position) %>% unique %>%
+                 group_by(rowname) %>% 
+                 dplyr::slice(1) %>% ungroup() ),
+              by=c("rowname")) %>% dplyr::select(-name) %>% as.data.frame()
+  rownames(row_data) <- row_data$rowname
+  
+  stopifnot(all(rownames(assay_data)==rownames(row_data) ))
+
+  # prepare column data
+  col_data <- left_join((colnames(assay_data) %>% enframe(value = "colname")),
+            (proteomics_tbl_meta_biomart %>% dplyr::select(colname, mut) %>% unique() ),
+            by=c("colname") ) %>% dplyr::select(-name) %>% as.data.frame()
+  rownames(col_data) <- col_data$colname
+  
+  stopifnot(all(colnames(assay_data)==rownames(col_data) ))
+  if( (length(unique(col_data[,mut])) ==2) & !is.logical(col_data[,mut]) & is.numeric(col_data[,mut]) ){
+    col_data[,mut] <- as.logical(col_data[,mut] == max(col_data[,mut]) )
+  }
+  
+  #Creating an expression set
+  raw_dataE <- ExpressionSet(assayData = assay_data,
+                             phenoData = AnnotatedDataFrame(col_data),
+                             featureData = AnnotatedDataFrame(row_data))
+  validObject(raw_dataE)
+  if(!is.logical(pData(raw_dataE)[,colnames(pData(raw_dataE))==mut]))stop("The mutation you want to look at is not logical")
+  raw_dataE
+  
+  # Limma
+  limma_data <- raw_dataE
+  comparison <- c("mut - wt")
+  
+  colnames(pData(limma_data))[colnames(pData(limma_data)) == mut] <- "condition"
+  pData(limma_data) <- mutate(pData(limma_data),condition= if_else(condition, "mut","wt") )
+  limma_data <- limma_data[, !is.na(pData(limma_data)$cond)]
+  limma.cond <- factor(pData(limma_data)$condition, ordered = FALSE)
+  
+  contrast.matrix <- model.matrix( ~ 0 + limma.cond)
+  colnames(contrast.matrix) <- gsub("limma.cond", "", colnames(contrast.matrix))
+  
+  limma.object <- eBayes(
+    contrasts.fit(
+      lmFit(limma_data, design = contrast.matrix),
+      makeContrasts(contrasts = comparison, levels = contrast.matrix)
+      )
+    )  
+
+  ##### DEQMS
+  tmp <- metadata(multiomics_MAE)$protein_description %>% dplyr::select(`Gene Name`, MinPSMQuant) %>% 
+    mutate(MinPSMQuant= as.numeric(MinPSMQuant))
+  psm.count.table <- tmp[,2] %>% as.data.frame()
+  rownames(psm.count.table) <- tmp$`Gene Name`
+  
+  limma.object$count = psm.count.table[rownames(limma.object$coefficients),"MinPSMQuant"]
+  limma_DEQMS = spectraCounteBayes(limma.object)
+  
+  DEqMS.results = outputResult(limma_DEQMS,coef_col = 1)
+    
+  limma_results_i <- DEqMS.results
+    limma_results_i <- subset(limma_results_i, !is.na(logFC))
+    limma_results_i$comparison <- comparison
+    limma_results_i$mut <- mut
+    colnames(limma_results_i)[c(8,9,10, 14, 15, 16)] <- 
+      c("limma.t_beforeDEQMS", "pvalue.limma_beforeDEQMS" , "fdr.limma_beforeDEQMS", "t", "pvalue.limma", "fdr.limma")
+    limma_results_i$fdr <- limma_results_i$fdr.limma
+    limma_results_i$pvalue <- limma_results_i$pvalue.limma
+    return(limma_results_i)
+
+}
+
+```
+
+### Annotation function
+```{r limma annotation hits other mut function, eval=TRUE, echo=TRUE}
+Annotate_Limma_Results <- function(limma_results){
+  fdr_hit_threshold <- 0.001
+  fdr_candidate_threshold = 0.01
+  fc_hit_threshold <- 0.5
+  fc_candidate_threshold <- 0.3
+  
+   limma_results$hit <-
+    with(limma_results, ifelse(fdr <= fdr_hit_threshold & abs(logFC) >= fc_hit_threshold, TRUE, FALSE))
+  limma_results$hit_annotation <- with(limma_results, 
+                                       ifelse(fdr <= fdr_hit_threshold & abs(logFC) >= fc_hit_threshold, 
+                                              "hit", 
+                                              ifelse(fdr <= fdr_candidate_threshold & abs(logFC) >= fc_candidate_threshold,
+                                                     "candidate", "no hit")))
+  limma_results$hit_annotation <- factor(limma_results$hit_annotation, ordered = TRUE, levels = c("hit", "candidate", "no hit"))
+  return(limma_results)
+}
+```
+
+## All genetic alterations limma
+### Conduct limma
+```{r limma other mutations, include=TRUE, results="markup", message=FALSE}
+limma_results <- NULL
+
+mut_to_limma <- colnames(proteomics_tbl_meta_biomart)[-(1:11)][c(-15)]
+
+for(i in 1:length(mut_to_limma)){
+  m <- mut_to_limma[i]
+  print(m)
+  limma_results <- bind_rows(limma_results, 
+                             Calculate_Limma(assay_data = assay(multiomics_MAE[prot_few_nas ,pat_overlap_prot_RNA ,"proteomics"]), mut = m))
+}
+
+limma_results$mut %>% unique
+```
+
+### Plot limma results
+```{r limma plot other mut, eval=TRUE, echo=TRUE, fig.show="asis"}
+ggplot(data = limma_results) +
+  geom_histogram(aes(pvalue.limma, alpha = 0.5), bins = 40) +
+  guides(alpha = FALSE) +
+  xlab("p-value") +
+  facet_wrap( ~ mut +comparison, scale = "free_y") +
+  coord_cartesian(xlim = c(0, 1)) +
+  pp_sra + ggtitle("p-value histograms")
+```
+
+### Limma Annotation of hits
+
+#### Annotate
+```{r limma annotation hits other mut conduct, eval=TRUE, echo=TRUE}
+limma_results <- Annotate_Limma_Results(limma_results)
+
+with(limma_results, table(mut, hit_annotation))
+
+message("Number of up and downregulated hits")
+with(limma_results %>% filter(hit==TRUE), table(mut, sign(logFC)))
+
+dif_proteins_P_plot <- with(limma_results %>% mutate(dir=sign(logFC)), table("mut"=paste0(mut,"dir", dir), hit)) %>% as_tibble() %>% 
+  separate(mut, into = c("mut", "dir"), sep = "dir") %>%
+  filter(mut!="health_record_bin_treated") %>%
+  mutate(dir=as.numeric(dir)) %>%
+  mutate(n=n*dir) %>%
+  mutate(mut=gsub("chrom_abber", "CNVs", mut), mut=gsub("health_record_bin", "IGHV", mut)) %>% 
+  separate(mut, into = c("Type", "mut"), sep="_", extra = "merge" ) %>%
+  filter(hit==TRUE) %>%
+  arrange(desc(n)) %>%
+  mutate(mut = as.factor(mut)) %>%
+  mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+  ggplot(aes(mut, n)) +
+  geom_col(aes(fill=as.character(dir))) +
+  ylab("Nr. differentially abundant proteins") +
+  facet_grid(~Type, scales = "free_x", space="free") +
+  pp_sra_noguides_tilted +
+  scale_fill_manual(values = c("#0571b0", "#ca0020"), drop=FALSE) +
+  geom_hline(yintercept = 0, color="darkgray")
+
+dif_proteins_P_plot
+```
+
+## Plot limma hits in volcano plot
+### All conditions
+```{r limma plot vulcano plot other mut, fig.height=30, fig.width=12, eval=TRUE, echo=TRUE, fig.show="asis"}
+ggplot(data = limma_results, aes(logFC, -log10(pvalue), colour = hit_annotation)) +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point() +
+  geom_text(aes(label = rowname), 
+            data = subset(limma_results, hit_annotation == "hit"), 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  facet_wrap( ~ mut , ncol = 2) +
+  xlab("log2(fold change)") +
+  scale_colour_hue() +
+  pp_sra
+
+tmp <- limma_results %>% filter(hit==TRUE) %>% 
+  mutate(direction=sign(logFC)) %>%
+  group_by(mut) %>% arrange(fdr) %>% 
+  dplyr::select(rowname, direction)
+message("Upregulated hits")
+sapply(group_nest(tmp)$mut, function(m){
+  tmp %>% filter(mut==m, direction==1) %>% .$rowname
+})
+message("Downregulated hits")
+sapply(group_nest(tmp)$mut, function(m){
+  tmp %>% filter(mut==m, direction==-1) %>% .$rowname
+})
+```
+
+### Trisomy 12 colored by chromosome
+```{r limma plot volcano plot other mut tris12,  eval=TRUE, echo=TRUE, warning=FALSE}
+limma_results %>% filter(mut=="chrom_abber_trisomy12") %>%
+  mutate("Affected_region" = if_else( chromosome_name=="12", "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(logFC= if_else(logFC > log2(5), log2(5.2), 
+                                    if_else(logFC<(-log2(5)), -log2(5.2), logFC) ) ) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname, color=chromosome_name=="12"), 
+            data = subset(limma_results %>% filter(mut=="chrom_abber_trisomy12"), hit_annotation == "hit"), 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  guides(color=FALSE)+
+  coord_cartesian(xlim=c(-log2(5), log2(5)), ylim=c(0, -log10(min(limma_results$pvalue)))) +
+  ggtitle("trisomy12")+
+  theme( plot.title = element_text(size = 20)) 
+
+tmp <- (limma_results %>% 
+              filter(mut=="chrom_abber_trisomy12", chromosome_name=="12") %>%
+  .$logFC>0)  %>% table %>% as_tibble() 
+colnames(tmp) <- c("fc", "n")
+tmp <- tmp %>% arrange(desc(`fc`)) 
+tmp <- tmp %>% mutate(label=paste( round(n/sum(tmp$n)*100, 1), "%" ), cums =cumsum(tmp$n) ) 
+tmp %>%
+  mutate("fc"=as.factor(`fc`)) %>% 
+  ggplot(aes(x="", fill=`fc`,y= n)) +
+  geom_col() +
+  ggtitle("Proteins on chromosome 12 with positive logFC in trisomy 12") + 
+  coord_polar("y", start=0) +
+  pp_sra +
+  theme(axis.title = element_blank(), axis.ticks = element_blank())+
+  scale_fill_manual(values = c( "grey", "#0571b0"), drop=FALSE)+
+  annotate(geom = "text", y = tmp$cums-(tmp$n/2), x = 1, label = tmp$label)
+
+tmp <- (limma_results %>%  
+  filter(mut=="chrom_abber_trisomy12", hit==TRUE) %>%
+  .$chromosome_name == "12") %>%
+  table %>% as_tibble()
+colnames(tmp) <- c("chr12", "n")
+tmp <- tmp %>% arrange(desc(`chr12`)) 
+tmp <- tmp %>% mutate(label=paste( round(n/sum(tmp$n)*100, 1), "%" ), cums =cumsum(tmp$n) ) 
+piechart_hits_prot_chr_tris12 <-  tmp %>%
+  mutate("chr12"=as.factor(`chr12`)) %>% 
+  ggplot(aes(x="", fill=`chr12`,y= n)) +
+  geom_col() +
+  ggtitle("Chromosome location of hits in trisomy 12") + 
+  coord_polar("y", start=0) +
+  pp_sra +
+  theme(axis.title = element_blank(), axis.ticks = element_blank())+
+  scale_fill_manual(values = c( "grey", "#0571b0"), drop=FALSE)
+piechart_hits_prot_chr_tris12 +
+  annotate(geom = "text", y = tmp$cums-(tmp$n/2), x = 1, label = tmp$label)
+```
+
+#### Gene set enrichment analysis trisomy12 save data needed
+```{r GSEA, message=FALSE, results=FALSE}
+####### Input of all Values
+tris_pats <- colData(multiomics_MAE) %>% as_tibble() %>% filter(!is.na(trisomy12)) %>% .$patient_ID
+
+longFormat((multiomics_MAE[prot_few_nas , tris_pats ,"proteomics"])) %>% 
+  as_tibble() %>% 
+  dplyr::select("NAME"=rowname, "DESCRIPTION"=assay , primary, value) %>%
+  unique() %>%
+  spread(primary, value) #%>%
+  #write.table(file = "/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/GSEA_CLL_Proteomics/190726_GSEA_data_long_gradient_trisomy12.txt", quote = FALSE, row.names = FALSE, sep = "\t", na="")
+
+tmp_pats <- longFormat((multiomics_MAE[prot_few_nas , tris_pats ,"proteomics"])) %>% 
+  as_tibble() %>% 
+  dplyr::select("NAME"=rowname, primary, value) %>%
+  unique() %>%
+  spread(primary, value)  %>%
+  dplyr::select(-1) %>%
+  colnames() %>%
+  enframe() 
+tmp_pats <- tmp_pats %>%
+  left_join(., 
+            (proteomics_tbl_meta_biomart %>% dplyr::select(primary, trisomy12) %>% unique) , 
+            by=c("value"="primary") )
+tmp_pats %>%
+  dplyr::select(trisomy12) #%>% t() %>%
+  #write.table(file = "/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/GSEA_CLL_Proteomics/190726_GSEA_phenotypelabels_long_gradient_trisomy12.cls", quote = FALSE, row.names = FALSE, col.names = FALSE, sep = " ", na="")
+dim(tmp_pats)
+sum(tmp_pats$trisomy12)
+
+######### Only input proteins which are not on chromosome 12
+prot_no_chr12 <- limma_results %>%
+  filter(mut=="chrom_abber_trisomy12", chromosome_name!="chr12") %>% .$rowname %>% unique
+
+proteomics_tbl_meta_biomart %>% 
+  filter(!is.na(trisomy12), rowname %in% prot_no_chr12) %>%
+  dplyr::select("NAME"=rowname,"DESCRIPTION"=assay, primary, value) %>%
+  unique() %>%
+  spread(primary, value) #%>%
+  #write.table(file = "/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/GSEA_CLL_Proteomics/190726_GSEA_data_long_gradient_trisomy12_no_chr12.txt", quote = FALSE, row.names = FALSE, sep = "\t", na="")
+```
+
+**Comment: These lists were edited later to fit the GSEA format**
+
+### del13q14 colored by chromosome
+```{r limma plot volcano plot other mut del13q14, eval=TRUE, echo=TRUE, warning=FALSE}
+limma_results %>% filter(mut=="chrom_abber_del13q14") %>%
+  mutate("Affected_region" = if_else( (chromosome_name=="13" & start_position>47000000 & start_position<51000000 ), "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(logFC= if_else(logFC > log2(5), log2(5.2), 
+                                    if_else(logFC<(-log2(5)), -log(5.2), logFC) ) ) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname, color=(chromosome_name=="13" & start_position>47000000 & start_position<51000000)), 
+            data = subset(limma_results %>% filter(mut=="chrom_abber_del13q14"), hit_annotation == "hit"), 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  guides(color=FALSE)+
+  coord_cartesian(xlim=c(-log2(5), log2(5)), ylim=c(0, -log10(min(limma_results$pvalue))))+
+  ggtitle("del13q14")+
+  theme( plot.title = element_text(size = 20)) 
+```
+
+### del11q colored by chromosome
+```{r limma plot volcano plot other mut del11q, eval=TRUE, echo=TRUE, warning=FALSE}
+limma_results %>% filter(mut=="chrom_abber_del11q") %>%
+  mutate("Affected_region" = if_else( (chromosome_name=="11" & start_position>97400000 & start_position<110600000), "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(logFC= if_else(logFC > log2(5), log2(5.2), 
+                                    if_else(logFC<(-log2(5)), -log2(5.2), logFC) ) ) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname, color=(chromosome_name=="11" & start_position>97400000 & start_position<110600000)), 
+            data = subset(limma_results %>% filter(mut=="chrom_abber_del11q"), hit_annotation == "hit"), 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  guides(color=FALSE)+
+  coord_cartesian(xlim=c(-log2(5), log2(5)), ylim=c(0, -log10(min(limma_results$pvalue)))) +
+  ggtitle("del11q")+
+  theme(plot.title = element_text(size = 20)) 
+```
+
+### del17p13 colored by chromosome
+```{r limma plot volcano plot other mut del17p13, eval=TRUE, echo=TRUE, warning=FALSE}
+limma_results %>% filter(mut=="chrom_abber_del17p13") %>%
+  mutate("Affected_region" = if_else( (chromosome_name=="17" & mean_position<10800000), "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(logFC= if_else(logFC > log2(5), log2(5.2), 
+                                    if_else(logFC<(-log2(5)), -log2(5.2), logFC) ) ) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname, color=(chromosome_name=="17" & mean_position<10800000)), 
+            data = subset(limma_results %>% filter(mut=="chrom_abber_del17p13"), hit_annotation == "hit"), 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  guides(color=FALSE)+
+  coord_cartesian(xlim=c(-log2(5), log2(5)), ylim=c(0, -log10(min(limma_results$pvalue)))) +
+  ggtitle("del17p13")+
+  theme(plot.title = element_text(size = 20)) 
+```
+
+### XPO1
+```{r limma plot volcano plot other mut XPO1, eval=TRUE, echo=TRUE, warning=FALSE}
+XPO_volcano_plot <- limma_results %>% filter(mut=="SNPs_XPO1") %>%
+  mutate("Affected_region" = if_else( rowname=="XPO1", "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname), 
+            data = subset(limma_results %>% filter(mut=="SNPs_XPO1", rowname!="XPO1"), hit_annotation == "hit"), 
+            vjust = 0, size = 3, nudge_y = (-1), nudge_x = -0.3,
+            check_overlap = FALSE, color="#0571b0") +
+   geom_text(aes(label = rowname, color=rowname=="XPO1"), 
+            data = subset(limma_results %>% filter(mut=="SNPs_XPO1", rowname=="XPO1")), 
+            vjust = 0, size = 3,  nudge_x = 0.2, nudge_y = (-0.5), 
+            check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  coord_cartesian(xlim=c(-log2(5), log2(5)) ) 
+
+XPO_volcano_plot + ggtitle("XPO1")+
+  theme( plot.title = element_text(size = 20)) +
+  guides(color=FALSE)
+```
+
+### TP53
+```{r limma plot volcano plot other mut TP53, eval=TRUE, echo=TRUE, warning=FALSE}
+TP53_volcano_plot <- limma_results %>% filter(mut=="SNPs_TP53") %>%
+  mutate("Affected_region" = if_else( rowname=="TP53", "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname), 
+            data = subset(limma_results %>% filter(mut=="SNPs_TP53", rowname!="TP53"), hit_annotation == "hit"), 
+            vjust = 0, size = 3,  nudge_y = -0.3, nudge_x = -0.2, check_overlap = FALSE, color="#0571b0") +
+   geom_text(aes(label = rowname, color=rowname=="TP53"), 
+            data = subset(limma_results %>% filter(mut=="SNPs_TP53", rowname=="TP53")), 
+            vjust = 0, size = 3, nudge_y = -0.3, nudge_x = -0.2, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  coord_cartesian(xlim=c(-log2(2.2), log2(2.2)) ) 
+
+TP53_volcano_plot + ggtitle("TP53")+
+  theme( plot.title = element_text(size = 20)) +
+  guides(color=FALSE)
+```
+
+### ATM
+```{r limma plot volcano plot other mut ATM, eval=TRUE, echo=TRUE, warning=FALSE}
+ATM_volcano_plot <- limma_results %>% filter(mut=="SNPs_ATM") %>%
+  mutate("Affected_region" = if_else( rowname=="ATM", "TRUE", 
+                                     if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname), 
+            data = subset(limma_results %>% filter(mut=="SNPs_ATM", rowname!="ATM"), hit_annotation == "hit"), 
+            vjust = 0, size = 3,  nudge_y = -0.3, nudge_x = -0.2, check_overlap = FALSE, color="#0571b0") +
+   geom_text(aes(label = rowname, color=rowname=="ATM"), 
+            data = subset(limma_results %>% filter(mut=="SNPs_ATM", rowname=="ATM")), 
+            vjust = 0, size = 3, nudge_y = -0.3, nudge_x = -0.2, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
+  pp_sra+
+  coord_cartesian(xlim=c(-log2(2.2), log2(2.2)) ) 
+
+ATM_volcano_plot + ggtitle("ATM")+
+  theme( plot.title = element_text(size = 20)) +
+  guides(color=FALSE)
+```
+
+## Limma with subsets of patients
+### Consensus clusters groups 5 vs. all others
+```{r limma subsets pats CCP all}
+selpats <- colData(multiomics_MAE) %>% as_tibble() %>% filter(!is.na(PG)) %>% .$patient_ID
+proteomics_tbl_meta_biomart_tmp <- proteomics_tbl_meta_biomart
+proteomics_tbl_meta_biomart <- left_join(proteomics_tbl_meta_biomart, enframe(CCP_group5==5, name = "primary", value="PG"), by="primary" )
+limma_results_CC5_5_all <-  Calculate_Limma(assay_data = assay(multiomics_MAE[prot_few_nas , selpats ,"proteomics"]), mut = "PG")
+proteomics_tbl_meta_biomart <- proteomics_tbl_meta_biomart_tmp 
+
+ggplot(data = limma_results_CC5_5_all) +
+  geom_histogram(aes(pvalue.limma, alpha = 0.5), bins = 40) +
+  guides(alpha = FALSE) +
+  xlab("p-value") +
+  facet_wrap( ~ mut , scale = "free_y") +
+  coord_cartesian(xlim = c(0, 1)) +
+  pp_sra +
+  ggtitle("PG groups")
+
+limma_results_CC5_5_all <- Annotate_Limma_Results(limma_results_CC5_5_all)
+
+limma_results_CC5_5_all %>% 
+  mutate("Affected_region" =  if_else(hit_annotation == "hit",  "hit", "not altered")) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("hit", "not altered"))) %>%
+ggplot(aes(logFC, -log10(pvalue)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = rowname), color="#0571b0", 
+            data = subset(limma_results_CC5_5_all %>% filter( hit_annotation == "hit"), 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE)) +
+  facet_wrap( ~ mut, ncol = 1) +
+  xlab("log2(fold change)") +
+  scale_color_manual(values = c("#0571b0",  "grey"), drop=FALSE) +
+  pp_sra+
+  guides(color=guide_legend(title = "PG groups"))+
+  ggtitle("Consensus cluster plus group 5 against all others") 
+
+limma_results_CC5_5_all %>% filter(hit==TRUE) %>% .$rowname
+```
+
+```{r limma subsets pats CCP all BCR, eval=FALSE}
+gene.data <- limma_results_CC5_5_all %>% 
+  filter( rowname %in% BCR_genes$symbol) %>% 
+  dplyr::select(logFC) %>% unlist 
+names(gene.data) <- limma_results_CC5_5_all %>% 
+  filter( rowname %in% BCR_genes$symbol) %>% 
+  dplyr::select(rowname) %>% unlist
+
+oldwd <- getwd()
+setwd("/Volumes/sd17b003/Sophie/Analysis/CLL_Proteomics/CLL_Proteomics_final/Figures/pathview/")
+pathview::pathview(pathway.id = "04662", gene.data = gene.data, species = "hsa", gene.idtype = "SYMBOL", 
+         bins = 10, 
+         limit = list(gene=c( -max(abs(gene.data), na.rm = TRUE) , max(abs(gene.data), na.rm = TRUE))), 
+         kegg.native = TRUE, out.suffix = "PG5")
+pathview::pathview(pathway.id = "04662", gene.data = gene.data, species = "hsa", gene.idtype = "SYMBOL", 
+         bins = 10, 
+         limit = list(gene=c( -max(abs(gene.data), na.rm = TRUE) , max(abs(gene.data), na.rm = TRUE))), 
+         kegg.native = FALSE, out.suffix = "PG5")
+setwd(oldwd)
+```
+
+#### Gene set enrichment analysis consensus cluster plus groups 5 vs. all
+```{r GSEA CCP 5 vs all, message=FALSE, results=FALSE}
+####### Input of all Values
+longFormat((multiomics_MAE[prot_few_nas , selpats ,"proteomics"])) %>% 
+  as_tibble() %>% 
+  dplyr::select("NAME"=rowname, "DESCRIPTION"=assay , primary, value) %>%
+  unique() %>%
+  spread(primary, value) #%>%
+  #write.table(file = "/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/GSEA_CLL_Proteomics/190927_GSEA_data_long_gradient_CCP_5vsall.txt", quote = FALSE, row.names = FALSE, sep = "\t", na="")
+
+tmp_pats <- longFormat((multiomics_MAE[prot_few_nas , selpats ,"proteomics"])) %>% 
+  as_tibble() %>% 
+  dplyr::select("NAME"=rowname, primary, value) %>%
+  unique() %>%
+  spread(primary, value)  %>%
+  dplyr::select(-1) %>%
+  colnames() %>%
+  enframe() 
+tmp_pats <- tmp_pats %>%
+  left_join(., 
+            enframe(multiomics_MAE$PG, value="PG", name="primary" ) %>% mutate("PG"=PG==5) , 
+            by=c("value"="primary") )
+tmp_pats %>%
+  dplyr::select(PG) #%>% t() %>%
+  #write.table(file = "/Users/sophierabe/Desktop/PhD/Labor/Proteomics/CLL/GSEA_CLL_Proteomics/190927_GSEA_phenotypelabels_long_gradient__CCP_5vsall.cls", quote = FALSE, row.names = FALSE, col.names = FALSE, sep = " ", na="")
+dim(tmp_pats)
+sum(tmp_pats$PG==TRUE)
+```
+
+
+# Save important plots
+```{r save image}
+save(dif_proteins_P_plot, XPO_volcano_plot, TP53_volcano_plot, ATM_volcano_plot, piechart_hits_prot_chr_tris12, 
+     file = "RData_plots/CLL_Proteomics_Limma_Plots.RData")
+```
+
+# Save data needed for further analysis
+```{r}
+save(limma_results,
+     file = "data/CLL_Proteomics_LimmaProteomics.RData")
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```

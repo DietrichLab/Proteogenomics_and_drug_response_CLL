@@ -1,0 +1,417 @@
+---
+title: "Analysis CLL Proteomics - RNASeq"
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(gtools)
+library(progress)
+library(Matrix)
+library(Hmisc)
+library(ggpubr)
+library(DESeq2)
+library(tidyverse)
+library(vsn)
+library(fdrtool)
+library(limma)
+library(apeglm)
+library(IHW)
+library(Rtsne)
+library(biomartr)
+library(biomaRt)
+library(MultiAssayExperiment)
+library(gplots)
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("data/Figure_layouts.R")
+load("data/CLL_Proteomics_Setup.RData")
+load("data/CLL_Proteomics_LimmaProteomics.RData")
+```
+
+# Analysis
+## Correlation gene wise
+```{r analysis RNASeq correlation genes 1, warning=FALSE, fig.height=3, fig.width=6, results="markup", include=TRUE}
+prot_and_RNA_df <- bind_rows(longFormat(multiomics_MAE[prot_few_nas,,c("proteomics")]) %>% as_tibble(),
+  (left_join(longFormat(multiomics_MAE[,,c( "RNAseq_norm")]) %>% as_tibble(), 
+            (metadata(multiomics_MAE)$gene_symbol_mapping %>% as_tibble %>% dplyr::select(ensembl_gene_id, hgnc_symbol) ), 
+            by=c("rowname"="ensembl_gene_id")) %>%
+    group_by(assay, primary, "rowname"=hgnc_symbol, colname) %>%
+    dplyr::summarise(value=mean(value) ) %>%
+    ungroup() ) )  %>%
+  spread(assay, value) %>%
+  filter(!is.na(proteomics))
+
+pb <- progress_bar$new(total = length((prot_and_RNA_df %>% .$rowname %>% unique())), show_after = 2)
+cordf_gene <- lapply( (prot_and_RNA_df %>% .$rowname %>% unique()), function(g){
+  pb$tick()
+  tmp <- prot_and_RNA_df   %>%
+     filter(rowname == g)
+  if((is.na(tmp$RNAseq_norm) %>% sum) < 20 ){
+     cor_prot_rna <- cor.test(tmp$RNAseq_norm, tmp$proteomics, method = "spearman", na.action=na.omit())
+     return(c(g, cor_prot_rna$estimate, cor_prot_rna$p.value))
+   }
+ }) %>% do.call(rbind, .) %>% as_tibble() %>% transmute(symbol=V1, cor=as.numeric(rho), p=as.numeric(V3))
+
+cordf_gene <- cordf_gene %>%
+  mutate(padj=p.adjust(p, method = "BH"))
+```
+
+```{r analysis RNASeq correlation genes 1b, warning=FALSE,  fig.height=3, fig.width=6}
+cor_PR_plot <- cordf_gene %>% filter(!is.na(cor)) %>%
+  ggplot(aes(cor)) + 
+  geom_histogram(aes( fill=cor>0), bins = 50, color="black") +
+  scale_fill_manual(values = c("grey", "#0571b0")) +
+  geom_vline(aes(xintercept=median(cor)), linetype="dashed") +
+  pp_sra_noguides +
+  xlab("Spearman's rank correlation rho")
+
+cor_PR_plot +
+  annotate(median(cordf_gene %>% .$cor)+0.1, 300, geom = "text", label=round(median(cordf_gene %>% .$cor),3) ) +
+  annotate(x=-0.5, y=300, geom = "text", label=paste(
+    "pos.cor.=", round(sum(cordf_gene$cor>0) / length(cordf_gene$cor), 2),
+    "\nsign.pos.cor.=",round((cordf_gene %>% filter(padj<0.05, cor>0) %>% nrow)/length(cordf_gene$cor), 2 ),
+    "\nsign.neg.cor.=",round((cordf_gene %>% filter(padj<0.05, cor<0) %>% nrow)/length(cordf_gene$cor), 2 )), size=2,hjust = 0) 
+```
+
+### Higher correlation differential proteins?
+```{r}
+higher_cor_mut_hits <- function(m){
+  cor_df_IGHV_hits <- left_join(cordf_gene, 
+            limma_results %>% filter(mut==m) %>%
+              dplyr::select(gene, hit), by=c("symbol"="gene"))
+  
+  x1 <- cor_df_IGHV_hits %>% filter(!is.na(cor), hit==TRUE) %>% pull(cor) 
+  print(median(x1))
+  x2 <- cor_df_IGHV_hits %>% filter(!is.na(cor), hit==FALSE) %>% pull(cor) 
+  print(median(x2))
+  
+  print(cor_df_IGHV_hits %>% 
+    ggplot(aes(x=cor, color=hit))+ 
+    stat_ecdf(n=10000)+
+    ylab("Cumulative Frequency")+
+    xlab("Spearman's rank correlation rho")+
+    xlim(-0.5, 1.0)+
+    theme_bw()  +
+    annotate(x=-0.5, y=1, geom="text", label= paste("p-value=", format(ks.test(x1, x2)$p.value, digits=2)), hjust=0) )
+}
+
+higher_cor_mut_hits("health_record_bin_IGHV_mutated")
+higher_cor_mut_hits("chrom_abber_trisomy12")
+higher_cor_mut_hits("SNPs_SF3B1")
+
+sig_hits_plot <- left_join(limma_results %>% 
+            filter(mut %in% c("health_record_bin_IGHV_mutated", "chrom_abber_trisomy12", "SNPs_SF3B1")) %>% 
+            mutate(mut=gsub("health_record_bin_|chrom_abber_|SNPs_", "", mut)) %>%
+            mutate("differential in"= if_else(hit==TRUE, mut, "no hit")) %>%
+            dplyr::select(gene, `differential in`),
+          cordf_gene, by=c("gene"="symbol")) %>%
+  unique() %>%
+   ggplot(aes(x=cor, color=`differential in`))+ 
+    stat_ecdf(n=10000)+
+    ylab("Cumulative Frequency")+
+    xlab("Spearman's rank correlation rho")+
+    xlim(-0.5, 1.0)+
+    pp_sra
+
+sig_hits_plot
+
+message("Protein ~ RNA correlation splicing genes")
+x1 <- cordf_gene %>% filter(!is.na(cor), symbol %in% splice_genes) %>% pull(cor) 
+print(median(x1))
+x2 <- cordf_gene %>% filter(!is.na(cor)) %>% pull(cor) 
+print(median(x2))
+  
+splice_cor_sig_plot <- cordf_gene %>% 
+    filter(!is.na(cor) ) %>%
+    mutate("Spliceosome\ncomponent" = symbol %in% splice_genes) %>%
+    ggplot(aes(x=cor, color= `Spliceosome\ncomponent`))+ 
+    stat_ecdf(n=10000)+
+    ylab("Cumulative Frequency")+
+    xlab("Spearman's rank correlation rho")+
+    pp_sra +
+    scale_color_manual(values = c("gray50", "darkred") )
+splice_cor_sig_plot +  
+    annotate(x=-0.5, y=1, geom="text", label= paste("p-value=", format(ks.test(x1, x2)$p.value, digits=2)), hjust=0) +
+    annotate(x=median(x1)-0.3, y=0.5, geom="text", label= format(median(x1), digits=3), hjust=0, color="darkred") +
+    annotate(x=median(x2)+0.1, y=0.5, geom="text", label= format(median(x2), digits=3), hjust=0, color="grey50")
+    
+```
+
+
+## Differential expression RNASeq
+```{r rnaseq DESeq function, eval=TRUE, echo=TRUE, message=FALSE}
+mut_to_limma <- colnames(proteomics_tbl_meta_biomart)[-(1:11)][c(-15)]
+ddsOMZ <- multiomics_MAE[["RNAseq_full"]][,pat_overlap_prot_RNA]
+
+
+DESeq_across_all_mut <- function(mut){
+  dds <- ddsOMZ
+  muttotest <- longFormat(multiomics_MAE[mut , colnames(dds),]) %>% 
+    as.data.frame() %>% dplyr::filter(!assay  %in% c("proteomics", "RNAseq_full", "RNASeq_norm"))
+  colData(dds) <- cbind(colData(dds), left_join( (colnames(dds)%>% enframe %>% transmute("primary"=value)), muttotest, by=c("primary"))[,c("assay", "value")] )
+  
+  dds <- dds[,as.vector(!is.na(colData(dds)[,"value"]))]
+  colData(dds)$value <- as.factor(colData(dds)$value)
+  design(dds) <- ~value
+  print(mut)
+  dds <- DESeq(dds)
+  # Normal results
+  res <- results(dds, name="value_1_vs_0")
+  # Shrunken results
+  res_shrink <- lfcShrink(dds, coef="value_1_vs_0", type="apeglm")
+  # Results with IHW
+  resIHW <- results(dds, name="value_1_vs_0", filterFun = ihw)
+  print(sum(resIHW$padj < 0.1, na.rm=TRUE))
+  metadata(resIHW)$ihwResult
+  res$mut <- mut
+  resIHW$mut <- mut
+  res_shrink$mut <- mut
+  res$assay <- unique(colData(dds)$assay)
+  resIHW$assay <- unique(colData(dds)$assay)
+  res_shrink$assay <- unique(colData(dds)$assay)
+  return(list(res, resIHW, res_shrink))
+}
+```
+
+```{r rnaseq DESeq conduct, eval=TRUE, echo=TRUE, message=FALSE}
+res <- NULL
+resIHW <- NULL
+res_shrink <- NULL
+
+mut_to_DESeq <- gsub("SNPs_", "", gsub("health_record_bin_", "", gsub("chrom_abber_", "", mut_to_limma) ) )
+
+for( i in 1:length(mut_to_DESeq)){
+#  for( i in 1:2){
+  tmp <- DESeq_across_all_mut(mut_to_DESeq[i])
+  res <- rbind(res, tmp[[1]])
+  resIHW <- rbind(resIHW, tmp[[2]])
+  res_shrink <- rbind(res_shrink, tmp[[3]])
+}
+
+res_shrink_RNA <- res_shrink %>% as_tibble()
+colnames(res_shrink_RNA) <- paste0(colnames(res_shrink_RNA), "_RNA")
+res_shrink_RNA$ensembl_gene_id <- rownames(res_shrink)
+
+res_RNA <- res %>% as_tibble()
+colnames(res_RNA) <- paste0(colnames(res_RNA), "_RNA")
+res_RNA$ensembl_gene_id <- rownames(res)
+res_RNA <- res_RNA %>% mutate(alt_RNA=paste0(assay_RNA,  "_", mut_RNA))
+res_RNA <- left_join(res_RNA, metadata(multiomics_MAE)$gene_symbol_mapping, by=c("ensembl_gene_id")) 
+```
+
+## Number of differentially abundant genes
+```{r rnaseq mutations number differentially abundant genes}
+fdr_hit_threshold <- 0.001
+fdr_candidate_threshold = 0.01
+fc_hit_threshold <- 1.5
+fc_candidate_threshold <- 1.2
+
+res_RNA_annotated <- res_RNA %>% filter(baseMean_RNA!=0) %>%
+  mutate(hit_annotation_RNA=if_else(padj_RNA< fdr_hit_threshold & abs(log2FoldChange_RNA) > fc_hit_threshold, "hit",
+                                    if_else(padj_RNA< fdr_candidate_threshold & abs(log2FoldChange_RNA) > fc_candidate_threshold, "candidate", "no hit")),
+         hit=if_else(padj_RNA< fdr_hit_threshold & abs(log2FoldChange_RNA) > fc_hit_threshold, TRUE, FALSE) )
+
+dif_genes_R_plot <- with(res_RNA_annotated %>% mutate(dir=sign(log2FoldChange_RNA)), table("mut"=paste0(alt_RNA,"dir", dir), hit)) %>% as_tibble() %>% 
+  separate(mut, into = c("mut", "dir"), sep = "dir") %>%
+  filter(mut!="health_record_bin_treated") %>%
+  mutate(dir=as.numeric(dir)) %>%
+  mutate(n=n*dir) %>%
+  mutate(mut=gsub("chrom_abber", "CNVs", mut), mut=gsub("health_record_bin", "IGHV", mut)) %>% 
+  separate(mut, into = c("Type", "mut"), sep="_", extra = "merge" ) %>%
+  filter(hit==TRUE) %>%
+  arrange(desc(n)) %>%
+  mutate(mut = as.factor(mut)) %>%
+  mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+  ggplot(aes(mut, n)) +
+  geom_col(aes(fill=as.character(dir))) +
+  ylab("Nr. differentially abundant genes") +
+  facet_grid(~Type, scales = "free_x", space="free") +
+  pp_sra_noguides_tilted +
+  scale_fill_manual(values = c("#92c5de", "#f4a582")) +
+  geom_hline(yintercept = 0, color="darkgray")
+
+dif_genes_R_plot
+```
+
+## RNASeq only Volcano plots colored by chromosome
+### Trisomy 12
+```{r rnaseq mutations volcano colored by chromosome tris}
+tris_pats <- colData(multiomics_MAE) %>% as_tibble() %>% filter(!is.na(trisomy12)) %>% .$patient_ID
+
+res_RNA %>% 
+  filter(alt_RNA=="chrom_abber_trisomy12") %>%
+  mutate("Affected_region" = if_else( chromosome_name=="12", "TRUE", 
+                                     if_else(padj_RNA > fdr_hit_threshold | abs(log2FoldChange_RNA) <fc_hit_threshold, "not altered", "FALSE"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) %>%
+  ggplot(aes(log2FoldChange_RNA, -log10(pvalue_RNA)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = hgnc_symbol, color=chromosome_name=="12"), 
+            data = res_RNA %>% filter(alt_RNA=="chrom_abber_trisomy12", padj_RNA < fdr_hit_threshold, abs(log2FoldChange_RNA) >=fc_hit_threshold) %>% 
+              mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) , 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  ylab("-log10(pvalue)") +
+  scale_color_manual(values = c("#92c5de", "orange1", "grey")) +
+  pp_sra+
+  guides(color=FALSE) +
+  coord_cartesian(xlim=c(-5, 5), 
+                  ylim=c(0, -log10(min(res_RNA$pvalue_RNA, na.rm = TRUE)))) +
+  ggtitle("trisomy12")+
+  theme( plot.title = element_text(size = 20)) +
+  geom_vline(xintercept = 5.05, color="gray") +
+  geom_vline(xintercept = 5.1, color="gray") +
+  geom_segment(x=5, xend=5.15, y=26,yend=27, color="gray")+
+  geom_segment(x=5, xend=5.15, y=25.5,yend=26.5, color="gray")+
+  geom_vline(xintercept = -5.05, color="gray") +
+  geom_vline(xintercept = -5.1, color="gray") +
+  geom_segment(x=-5.15, xend=-5, y=26,yend=27, color="gray")+
+  geom_segment(x=-5.15, xend=-5, y=25.5,yend=26.5, color="gray")
+```
+
+### del13q14 colored by chromosome
+```{r rnaseq mutations volcano colored by chromosome del13q14, eval=TRUE, echo=TRUE, warning=FALSE}
+res_RNA %>% 
+  filter(alt_RNA=="chrom_abber_del13q14") %>%
+  mutate("Affected_region" = if_else( (chromosome_name=="13" & mean_position>17500000), "TRUE", 
+                                     if_else(padj_RNA > fdr_hit_threshold | abs(log2FoldChange_RNA) <fc_hit_threshold, "not altered", "FALSE"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) %>%
+  ggplot(aes(log2FoldChange_RNA, -log10(pvalue_RNA)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = hgnc_symbol, color=(chromosome_name=="13" & mean_position>17500000)), 
+            data = res_RNA %>% filter(alt_RNA=="chrom_abber_del13q14", padj_RNA < fdr_hit_threshold, abs(log2FoldChange_RNA) >=fc_hit_threshold) %>%
+              mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) , 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  ylab("-log10(pvalue)") +
+  scale_color_manual(values = c("#92c5de", "orange1", "grey")) +
+  pp_sra+
+  guides(color=FALSE) +
+  coord_cartesian(xlim=c(-5, 5), 
+                  ylim=c(0, -log10(min(res_RNA$pvalue_RNA, na.rm = TRUE)))) +
+  ggtitle("del13q14")+
+  theme( plot.title = element_text(size = 20)) +
+  geom_vline(xintercept = 5.05, color="gray") +
+  geom_vline(xintercept = 5.1, color="gray") +
+  geom_segment(x=5, xend=5.15, y=26,yend=27, color="gray")+
+  geom_segment(x=5, xend=5.15, y=25.5,yend=26.5, color="gray")+
+  geom_vline(xintercept = -5.05, color="gray") +
+  geom_vline(xintercept = -5.1, color="gray") +
+  geom_segment(x=-5.15, xend=-5, y=26,yend=27, color="gray")+
+  geom_segment(x=-5.15, xend=-5, y=25.5,yend=26.5, color="gray")
+```
+
+### del11q colored by chromosome
+```{r rnaseq mutations volcano colored by chromosome del11q, eval=TRUE, echo=TRUE, warning=FALSE}
+res_RNA %>% 
+  filter(alt_RNA=="chrom_abber_del11q") %>%
+  mutate("Affected_region" = if_else( (chromosome_name=="11" & mean_position>53100000), "TRUE", 
+                                     if_else(padj_RNA > fdr_hit_threshold | abs(log2FoldChange_RNA) <fc_hit_threshold, "not altered", "FALSE"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
+  mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) %>%
+  ggplot(aes(log2FoldChange_RNA, -log10(pvalue_RNA)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = hgnc_symbol, color=(chromosome_name=="11" & mean_position>53100000)), 
+            data = res_RNA %>% filter(alt_RNA=="chrom_abber_del11q", padj_RNA < fdr_hit_threshold, abs(log2FoldChange_RNA) >=fc_hit_threshold) %>%
+              mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) , 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  ylab("-log10(pvalue)") +
+  scale_color_manual(values = c("#92c5de", "orange1", "grey")) +
+  pp_sra+
+  guides(color=FALSE) +
+  coord_cartesian(xlim=c(-5, 5), 
+                  ylim=c(0, -log10(min(res_RNA$pvalue_RNA, na.rm = TRUE)))) +
+  ggtitle("del11q")+
+  theme( plot.title = element_text(size = 20)) +
+  theme( plot.title = element_text(size = 20)) +
+  geom_vline(xintercept = 5.05, color="gray") +
+  geom_vline(xintercept = 5.1, color="gray") +
+  geom_segment(x=5, xend=5.15, y=26,yend=27, color="gray")+
+  geom_segment(x=5, xend=5.15, y=25.5,yend=26.5, color="gray")+
+  geom_vline(xintercept = -5.05, color="gray") +
+  geom_vline(xintercept = -5.1, color="gray") +
+  geom_segment(x=-5.15, xend=-5, y=26,yend=27, color="gray")+
+  geom_segment(x=-5.15, xend=-5, y=25.5,yend=26.5, color="gray")
+```
+
+### del17p13 colored by chromosome
+```{r rnaseq mutations volcano colored by chromosome del17p13, eval=TRUE, echo=TRUE, warning=FALSE}
+res_RNA %>% 
+  filter(alt_RNA=="chrom_abber_del17p13") %>%
+  mutate("Affected_region" = if_else( (chromosome_name=="17" & mean_position<10800000), "TRUE", 
+                                     if_else(padj_RNA > fdr_hit_threshold | abs(log2FoldChange_RNA) <fc_hit_threshold, "not altered", "FALSE"))) %>% 
+  mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%  
+  mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) %>%
+  ggplot(aes(log2FoldChange_RNA, -log10(pvalue_RNA)))  +
+  geom_vline(aes(xintercept = 0)) +
+  geom_point(alpha=0.8, aes(colour = Affected_region)) +
+  geom_text(aes(label = hgnc_symbol, color=(chromosome_name=="17" & mean_position<10800000)), 
+            data = res_RNA %>% filter(alt_RNA=="chrom_abber_del17p13", padj_RNA < fdr_hit_threshold, abs(log2FoldChange_RNA) >=fc_hit_threshold) %>%
+              mutate(log2FoldChange_RNA= if_else(log2FoldChange_RNA > 5, 5.2, 
+                                    if_else(log2FoldChange_RNA<(-5), -5.2, log2FoldChange_RNA) ) ) , 
+            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
+  xlab("log2(fold change)") +
+  ylab("-log10(pvalue)") +
+  scale_color_manual(values = c("#92c5de", "orange1", "grey")) +
+  pp_sra+
+  guides(color=FALSE) +
+  coord_cartesian(xlim=c(-5, 5), 
+                  ylim=c(0, -log10(min(res_RNA$pvalue_RNA, na.rm = TRUE)))) +
+  ggtitle("del17p13")+
+  theme( plot.title = element_text(size = 20)) +
+  theme( plot.title = element_text(size = 20)) +
+  theme( plot.title = element_text(size = 20)) +
+  geom_vline(xintercept = 5.05, color="gray") +
+  geom_vline(xintercept = 5.1, color="gray") +
+  geom_segment(x=5, xend=5.15, y=26,yend=27, color="gray")+
+  geom_segment(x=5, xend=5.15, y=25.5,yend=26.5, color="gray")+
+  geom_vline(xintercept = -5.05, color="gray") +
+  geom_vline(xintercept = -5.1, color="gray") +
+  geom_segment(x=-5.15, xend=-5, y=26,yend=27, color="gray")+
+  geom_segment(x=-5.15, xend=-5, y=25.5,yend=26.5, color="gray")
+```
+
+# Save data needed for further analysis
+```{r}
+save(cor_PR_plot, dif_genes_R_plot, sig_hits_plot, #piechart_hits_RNA_chr_tris12, 
+     splice_cor_sig_plot,
+file = "RData_plots/CLL_Proteomics_RNASeq_Plots.RData")
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```

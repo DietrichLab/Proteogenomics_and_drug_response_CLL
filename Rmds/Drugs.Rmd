@@ -1,0 +1,1022 @@
+---
+title: "Analysis CLL Proteomics - Drugs"
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(gtools)
+#library(openxlsx)
+library(pheatmap)
+#library(reshape2)
+library(progress)
+library(Matrix)
+library(Hmisc)
+#library(lemon)
+library(ggpubr)
+#library(effsize)
+library(ggbeeswarm)
+#library(ggfortify)
+#library(ggpmisc)
+#library(ggrepel)
+#library(readxl)
+library(DESeq2)
+#library(TOSTER)
+library(tidyverse)
+#library(vsn)
+#library(fdrtool)
+#library(limma)
+#library(apeglm)
+#library(IHW)
+#library(Rtsne)
+#library(biomartr)
+#library(biomaRt)
+library(MultiAssayExperiment)
+#library(PMA)
+library(gplots)
+library(RColorBrewer)
+#library(grid)
+#library(ConsensusClusterPlus)
+#library(survival)
+#library(survminer)
+#library(cowplot)
+#library(DEqMS)
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("data/Figure_layouts.R")
+load("data/CLL_Proteomics_Setup.RData")
+load("data/CLL_Proteomics_ConsensusClustering.RData")
+```
+
+```{r Add CCP group}
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+```
+
+
+# Analysis
+## Drug-drug correlations
+```{r drug-drug cor}
+drs_sel <- metadata(multiomics_MAE)$drugs_functional_groups %>% 
+  filter( !( grepl("DMSO", Drug)   ) )  %>% 
+  mutate(Pathways=if_else(Pathways=="Apoptosis", "Inducer/inhibitor of apoptosis", Pathways))
+
+df_mean_drug_resp <- longFormat(multiomics_MAE[ , ,  "drug_resp_mono"]) %>% as_tibble() %>%
+  separate(rowname, into = c("Drug", "Concentration_step"), sep = "_") %>%
+  filter( !( grepl("DMSO", Drug)   ) )  %>% 
+  group_by(primary, Drug) %>%
+  dplyr::summarise(mean_percent_viable_cells = mean(value)) %>%
+  ungroup() %>%
+  spread(Drug, mean_percent_viable_cells) %>%
+  column_to_rownames("primary") %>%
+  as.matrix()
+
+df_mean_drug_resp <- apply(df_mean_drug_resp, 2, function(z){
+  if(any(is.na( z ))){
+    z[is.na( z )] <- median(z, na.rm = TRUE)
+  }
+  return(z)
+})
+
+drug_cor_mat <- df_mean_drug_resp %>%
+  cor() 
+heatmap_drug_drug_cor <- pheatmap(drug_cor_mat,
+         show_colnames = F,
+         treeheight_row= 0,
+         color = rev(brewer.pal(n = 11, name = "RdBu")),
+         breaks = seq(-1,1,0.2),
+         legend = F, border_color = NA,
+         treeheight_col = 0,
+         fontsize = 5
+        )
+
+heatmap_drug_drug_cor_legend <- pheatmap(drug_cor_mat,
+         show_colnames = F,
+         treeheight_row= 0,
+         color = rev(brewer.pal(n = 11, name = "RdBu")),
+         breaks = seq(-1,1,0.2), silent = TRUE
+        )[[4]]$grobs[[4]]
+```
+
+## Ibrutinib (no proteomics so far)
+```{r proteomics and drug response BCR drugs tris12 IGHV}
+#plot_response_tris12IGHV <- function(d){
+#  wideFormat(multiomics_MAE[c(d , "IGHV_mutated", "trisomy12"),,] ) %>% as_tibble() %>% 
+#    mutate_at(.vars =c("chrom_abber_trisomy12", "health_record_bin_IGHV_mutated" ), as.logical ) %>%
+#    #mutate(health_record_bin_IGHV_mutated=as.logical(health_record_bin_IGHV_mutated), chrom_abber_trisomy12=as.logical(chrom_abber_trisomy12>20)) %>%
+#    filter(!is.na(health_record_bin_IGHV_mutated ), !is.na(chrom_abber_trisomy12)) %>% 
+#    ggplot(aes_string("interaction(health_record_bin_IGHV_mutated, chrom_abber_trisomy12)", paste0("drug_resp_mono_",d) )) + 
+#        geom_boxplot(aes(fill= health_record_bin_IGHV_mutated)) + geom_beeswarm(aes(color=chrom_abber_trisomy12)) + 
+#    #stat_compare_means(method = "anova") + 
+#    stat_compare_means( method = "wilcox", label = "p.signif", comparisons = list(c("FALSE.FALSE", "TRUE.FALSE"), c("TRUE.TRUE", "FALSE.TRUE"), 
+#                                                                                 c("FALSE.FALSE", "FALSE.TRUE"), 
+#                                                                                 c("TRUE.TRUE", "TRUE.FALSE") )) + 
+#    ggtitle(paste("mono",d)) + 
+#    scale_fill_manual(values=c("#0571b0", "#ca0020")) +scale_color_manual(values = c("black", "palegreen3")) +
+#    geom_hline(yintercept = 1, color="darkgrey") +
+#    pp_sra_nox
+#}
+#
+#plot_response_tris12IGHV("Ibrutinib_1")
+#plot_response_tris12IGHV("Ibrutinib_2")
+#plot_response_tris12IGHV("Ibrutinib_3")
+#
+#plot_response_tris12IGHV("Idelalisib_1")
+#plot_response_tris12IGHV("Idelalisib_2")
+#plot_response_tris12IGHV("Idelalisib_3")
+#
+#plot_response_tris12IGHV("Duvelisib_1")
+#plot_response_tris12IGHV("Duvelisib_2")
+#plot_response_tris12IGHV("Duvelisib_3")
+```
+
+## XPO
+```{r proteomics and drug response XPO}
+#XPO_selinexor_plot <- 
+#  wideFormat(multiomics_MAE[,,c("SNPs", "drug_resp_mono")][c("Selinexor_1", "Selinexor_2","Selinexor_3" , "XPO1"),,] ) %>% 
+#  as_tibble() %>% 
+#    mutate_at(.vars =c("SNPs_XPO1"), as.logical ) %>%
+#    filter(!is.na(SNPs_XPO1 )) %>% 
+#  gather("cond", "Norm. percentage alive cells", c(-primary, -SNPs_XPO1 )) %>%
+#  mutate(cond=gsub("drug_resp_mono_", "", cond)) %>%
+#  separate(cond, into = c("drug", "conc"), sep = "_") %>%
+#  mutate(conc=paste("concentration", conc)) %>%
+#  ggplot(aes(SNPs_XPO1, `Norm. percentage alive cells`)) + 
+#  geom_boxplot(aes(fill= SNPs_XPO1)) + 
+#  geom_beeswarm() + 
+#  facet_grid(~conc) +
+#  scale_fill_manual(values=c("#0571b0", "#ca0020")) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  pp_sra +
+#  scale_x_discrete(labels=c("FALSE"="wt", "TRUE"="mut")) +
+#  theme(axis.title.x = element_blank())
+#  
+#XPO_selinexor_plot + ggtitle(paste("Selinexor")) + stat_compare_means(method = "wilcox") 
+
+XPO_selinexor_plot_3 <- 
+  wideFormat(multiomics_MAE[,,c("SNPs", "drug_resp_mono")][c("Selinexor_3" , "XPO1"),,] ) %>% 
+  as_tibble() %>% 
+    mutate_at(.vars =c("SNPs_XPO1"), as.logical ) %>%
+    filter(!is.na(SNPs_XPO1 )) %>% 
+  gather("cond", "Norm. percentage alive cells", c(-primary, -SNPs_XPO1 )) %>%
+  mutate(cond=gsub("drug_resp_mono_", "", cond)) %>%
+  separate(cond, into = c("drug", "conc"), sep = "_") %>%
+  mutate(conc=paste("concentration", conc)) %>%
+  ggplot(aes(SNPs_XPO1, `Norm. percentage alive cells`)) + 
+  geom_boxplot(aes(fill= SNPs_XPO1)) + 
+  geom_beeswarm() + 
+  scale_fill_manual(values=c("#0571b0", "#ca0020")) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  pp_sra +
+  scale_x_discrete(labels=c("FALSE"="wt", "TRUE"="mut")) +
+  theme(axis.title.x = element_blank())
+
+XPO_selinexor_plot_3 +  stat_compare_means(method = "wilcox") 
+```
+
+## Nutlin
+```{r proteomics and drug response Nutlin}
+TP53_Nutlin_plot_3 <- 
+  wideFormat(multiomics_MAE[,,c("SNPs", "drug_resp_mono")][c("Nutlin 3a_3" , "TP53"),,] ) %>% 
+  as_tibble() %>% 
+  mutate_at(.vars =c("SNPs_TP53"), as.logical ) %>%
+  filter(!is.na(SNPs_TP53 )) %>% 
+  gather("cond", "Norm. percentage alive cells", c(-primary, -SNPs_TP53 )) %>%
+  mutate(cond=gsub("drug_resp_mono_", "", cond)) %>%
+  separate(cond, into = c("drug", "conc"), sep = "_") %>%
+  mutate(conc=paste("concentration", conc)) %>%
+  ggplot(aes(SNPs_TP53, `Norm. percentage alive cells`)) + 
+  geom_boxplot(aes(fill= SNPs_TP53)) + 
+  geom_beeswarm() + 
+  scale_fill_manual(values=c("#0571b0", "#ca0020")) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  pp_sra +
+  scale_x_discrete(labels=c("FALSE"="wt", "TRUE"="mut")) +
+  theme(axis.title.x = element_blank())
+
+TP53_Nutlin_plot_3 + stat_compare_means(method = "wilcox")
+```
+
+## Proteomics and drug response
+### Correlation protein abundance and drug response
+```{r proteomics and drug response, fig.height=20}
+#pb <- progress_bar$new(total = length(prot1000), show_after = 2)
+#protein_drugresponse_cor <- lapply(prot1000, function(p){
+#  pb$tick()
+#  #lapply(c("Ibrutinib_2", "Idelalisib_2", "Duvelisib_2", "Nutlin 3a_2"), function(d){
+#  lapply(all_drugs, function(d){
+#    totest <- drug_and_proteomics %>% dplyr::filter(rowname == d | rowname==p) %>% dplyr::select(-rowname) %>% spread(assay, value)
+#    ct <- cor.test(totest$proteomics, log10(totest$drug_resp_mono))
+#    return(c("Drug"=d, "Protein"=p, "p"=ct$p.value, ct$estimate))
+#  }) %>% do.call(bind_rows,.)
+#}) %>% do.call(bind_rows,.) %>% mutate(p=as.numeric(p), cor=as.numeric(cor))
+#
+#protein_drugresponse_cor <- protein_drugresponse_cor %>% mutate(padj= p.adjust(p, method = "BH"))
+#protein_drugresponse_cor %>% dplyr::filter(padj<0.05)
+```
+
+#### Plot heatmap of correlations
+```{r proteomics and drug response heatmap, fig.height=11.5, fig.width=12}
+#protein_drugresponse_cor_wide <- protein_drugresponse_cor %>%
+# filter(!grepl(" \\+ ", Drug)) %>% filter( !( grepl("\\+|DMSO|SSZ|phenyleth|Oxaliplatin|Hydroxychloroquine|Obatoclax mesylate|Vitamin", Drug)   ) ) %>%
+#  dplyr::select(Drug, Protein, cor) %>% spread(Drug, cor) %>% as.data.frame()
+#rownames(protein_drugresponse_cor_wide) <- protein_drugresponse_cor_wide$Protein
+#protein_drugresponse_cor_wide <- protein_drugresponse_cor_wide %>% dplyr::select(-Protein) %>% as.matrix()
+#
+#pheatmap(protein_drugresponse_cor_wide, fontsize_row=2, color=colorRampPalette(rev(brewer.pal(n = 7, name =
+#  "RdBu")))(100))
+#
+#clusters_cor_pheatmaps_d_p <- pheatmap(protein_drugresponse_cor_wide, fontsize_row=2, cutree_rows = 8, cutree_cols = 8,
+#                                       color=colorRampPalette(rev(brewer.pal(n = 7, name =
+#  "RdBu")))(100))
+##clusters_cor_pheatmaps_d_p 
+##cutree(clusters_cor_pheatmaps_d_p$tree_col, k=8)
+##cutree(clusters_cor_pheatmaps_d_p$tree_row, k=8)[cutree(clusters_cor_pheatmaps_d_p$tree_row, k=8)==  cutree(clusters_cor_pheatmaps_d_p$tree_row, k=10)["STAT2"]] ##%>% names()
+```
+
+```{r proteomics and drug response function}
+#Cor_Drug_Prot_Plot <- function(d, p, I=FALSE, cor.size=4, title.size=13, mut="IGHV_mutated"){
+#  dpi <- drug_and_proteomics %>% 
+#    dplyr::filter(rowname == d | rowname==p) %>% 
+#    dplyr::select(-rowname) %>% spread(assay, value) 
+#  dpi <- left_join(dpi, longFormat(multiomics_MAE[mut,,]) %>% as_tibble() %>% dplyr::select(primary, "alt"=value) , by=c("primary") )
+#  
+#  if(I==TRUE){
+#  dpi %>%
+#    filter(!is.na(alt)) %>%
+#    ggplot(aes(log10(drug_resp_mono), proteomics)) +
+#    geom_point(aes(color=as.logical(alt))) +
+#    pp_sra_noguides +
+#    geom_smooth(method = "lm", color="gray40") +
+#    stat_cor(size=cor.size) +
+#    ggtitle(paste("Correlation", p, "-", d, "(", mut, ")")) +
+#    #coord_cartesian(xlim = c(0,1.5)) +
+#    xlab("log10 Normalised percentage alive cells") +
+#    ylab("Protein abundance") +
+#    facet_grid(~alt==1) +
+#    scale_color_manual(values = c("#0571b0", "#ca0020"))+
+#    theme(aspect.ratio=1, plot.title = element_text(size = title.size))
+#  }else{
+#      dpi %>%
+#    ggplot(aes(log10(drug_resp_mono), proteomics)) +
+#    geom_point() +
+#    pp_sra +
+#    geom_smooth(method = "lm") +
+#    stat_cor(color="darkred", size=cor.size) +
+#    ggtitle(paste(p, "-", d)) +
+#    #coord_cartesian(xlim = c(0,1.5)) +
+#    xlab("log10 Normalised percentage alive cells") +
+#    ylab("Protein abundance") +
+#    theme(aspect.ratio=1, plot.title = element_text(size = title.size))
+#  }
+#}
+```
+
+```{r proteomics and drug response top, warning=FALSE, message=FALSE}
+#sapply((protein_drugresponse_cor %>% dplyr::filter(padj<0.15) %>% .$Drug %>% unique()), function(d){
+#  plist <- lapply(protein_drugresponse_cor %>% dplyr::filter(padj<0.15, Drug==d) %>% arrange(desc(cor)) %>% .$Protein, function(p){
+#    Cor_Drug_Prot_Plot(d,p, cor.size = 3, title.size=7)})
+#  print(ggarrange(plotlist = plist))
+#})
+#
+##protein_drugresponse_cor %>% dplyr::filter(padj<0.3) %>%
+##  #filter(Drug %in% c("Ibrutinib", "Duvelisib")) %>%
+##  ggplot(aes(cor, -log10(p))) + 
+##  geom_point(color="lightgrey") + 
+##  facet_wrap(~Drug, ncol = 3) +
+##  geom_text(data = (protein_drugresponse_cor %>% 
+##  #                    filter(Drug %in% c("Ibrutinib", "Duvelisib")) %>%
+##                      filter( padj< 0.15)), aes(label=Protein, color=Drug), size=2, nudge_x = 0.01, nudge_y = 0.02)+
+##  pp_sra_noguides
+```
+
+#### Plot correlation for individual drug-protein combinations
+```{r proteomics and drug response single, warning=FALSE, message=FALSE}
+#Cor_Drug_Prot_Plot("Duvelisib", "STAT2", I=TRUE, mut = "IGHV_mutated")
+#Cor_Drug_Prot_Plot("Idelalisib", "STAT2", I=TRUE, mut = "IGHV_mutated")
+#Cor_Drug_Prot_Plot("Ibrutinib", "STAT2", I=TRUE, mut = "IGHV_mutated")
+#
+#Cor_Drug_Prot_Plot("Duvelisib", "STAT2", I=TRUE, mut = "trisomy12")
+#Cor_Drug_Prot_Plot("Idelalisib", "STAT2", I=TRUE, mut = "trisomy12")
+#Cor_Drug_Prot_Plot("Ibrutinib", "STAT2", I=TRUE, mut = "trisomy12")
+#
+#Cor_Drug_Prot_Plot("IRAK4 Inhibitor, Compound 26", "VAV1", I=F)
+#Cor_Drug_Prot_Plot("IRAK4 Inhibitor, Compound 26", "VAV1", I=TRUE, mut = "trisomy12")
+#Cor_Drug_Prot_Plot("IRAK4 Inhibitor, Compound 26", "ARHGDIB", I=F)
+#Cor_Drug_Prot_Plot("IRAK4 Inhibitor, Compound 26", "IRAK4", I=F)
+#Cor_Drug_Prot_Plot("IRAK4 Inhibitor, Compound 26", "IRAK4", I=TRUE, mut = "trisomy12")
+#
+#
+#Cor_Drug_Prot_Plot("Ibrutinib", "STAT2", I=FALSE)
+#
+#Cor_Drug_Prot_Plot("Venetoclax", "BCL2")
+#Cor_Drug_Prot_Plot("Venetoclax", "BAK1")
+#Cor_Drug_Prot_Plot("Venetoclax", "BCL2L11")
+#Cor_Drug_Prot_Plot("Venetoclax", "BAX")
+#Cor_Drug_Prot_Plot("Venetoclax", "BID")
+#Cor_Drug_Prot_Plot("Venetoclax", "BBC3") # PUMA
+```
+
+## Limma Drug response and proteomics
+
+### Thresholded drug response
+#### Function with DEQMS
+```{r limma other mutations function DEQMS, include=TRUE, results="markup"}
+#Calculate_Limma_drug_thres <- function(assay_data, dr){
+#  # prepare assay data
+#  assay_data[is.infinite((assay_data))] <- NA
+#  is.na(assay_data) <- NA
+#  
+#
+#  row_data <- left_join((rownames(assay_data) %>% enframe(value = "rowname")),
+#              (proteomics_tbl_meta_biomart %>% 
+#                dplyr::select(rowname, start_position, end_position, chromosome_name,  mean_position) %>% unique %>%
+#                 group_by(rowname) %>% 
+#                 dplyr::slice(1) %>% ungroup() ),
+#              by=c("rowname")) %>% dplyr::select(-name) %>% as.data.frame()
+#  rownames(row_data) <- row_data$rowname
+#  
+#  stopifnot(all(rownames(assay_data)==rownames(row_data) ))
+#  
+#  if(nrow(drug_and_proteomics_drug %>% filter(rowname==dr))==0)stop("The drug you want to look at doesn't exist")
+#  
+#  qu_drug <- drug_and_proteomics_drug %>% filter(rowname==dr) %>% .$value %>% quantile()
+#  resp_drug <- drug_and_proteomics_drug %>% filter(rowname==dr) %>% 
+#  mutate("response"=if_else(value < qu_drug[2], "responder", if_else(value > qu_drug[4], "non_responder", "NA"))) %>%
+#  mutate(response=as.factor(response))
+#  
+#  # prepare column data
+#  col_data <- left_join((colnames(assay_data) %>% enframe(value = "colname")),
+#            (resp_drug %>% dplyr::select(colname, response)),
+#            by=c("colname") ) %>% dplyr::select(-name) %>% as.data.frame()
+#  #col_data <- left_join(col_data , prot_ID_df, by=c("pat_ID"))
+#  rownames(col_data) <- col_data$colname
+#  stopifnot(all(colnames(assay_data)==rownames(col_data) ))
+#  
+#  pat_to_test <- col_data %>% filter(response!="NA") %>% .$colname
+#  
+#  #Creating an expression set
+#  raw_dataE <- ExpressionSet(assayData = assay_data[, pat_to_test],
+#                             phenoData = AnnotatedDataFrame(droplevels(col_data[pat_to_test,])),
+#                             featureData = AnnotatedDataFrame(row_data))
+#  validObject(raw_dataE)
+#  raw_dataE
+#
+#  # Limma
+#  limma_data <- raw_dataE
+#  comparison <- c("responder - non_responder")
+#  
+#  colnames(pData(limma_data))[colnames(pData(limma_data)) == "response"] <- "condition"
+#  limma_data <- limma_data[, !is.na(pData(limma_data)$cond)]
+#  limma.cond <- factor(pData(limma_data)$condition, ordered = FALSE)
+#  
+#  contrast.matrix <- model.matrix( ~ 0 + limma.cond)
+#  colnames(contrast.matrix) <- gsub("limma.cond", "", colnames(contrast.matrix))
+#  
+#  limma.object <- eBayes(
+#    contrasts.fit(
+#      lmFit(limma_data, design = contrast.matrix),
+#      makeContrasts(contrasts = comparison, levels = contrast.matrix)
+#      )
+#    )  
+#
+#  ##### DEQMS
+#  tmp <- metadata(multiomics_MAE)$protein_description %>% dplyr::select(`Gene Name`, MinPSMQuant) %>% 
+#    mutate(MinPSMQuant= as.numeric(MinPSMQuant))
+#  psm.count.table <- tmp[,2] %>% as.data.frame()
+#  rownames(psm.count.table) <- tmp$`Gene Name`
+#  
+#  limma.object$count = psm.count.table[rownames(limma.object$coefficients),"MinPSMQuant"]
+#  limma_DEQMS = spectraCounteBayes(limma.object)
+#  
+#  DEqMS.results = outputResult(limma_DEQMS,coef_col = 1)
+#    
+#  limma_results_i <- DEqMS.results
+#    limma_results_i <- subset(limma_results_i, !is.na(logFC))
+#    limma_results_i$comparison <- comparison
+#    limma_results_i$mut <- dr
+#    colnames(limma_results_i)[c(8,9,10, 14, 15, 16)] <- 
+#      c("limma.t_beforeDEQMS", "pvalue.limma_beforeDEQMS" , "fdr.limma_beforeDEQMS", "t", "pvalue.limma", "fdr.limma")
+#    limma_results_i$fdr <- limma_results_i$fdr.limma
+#    limma_results_i$pvalue <- limma_results_i$pvalue.limma
+#    return(limma_results_i)
+#
+#}
+```
+
+
+#### Conduct
+```{r proteomics and drug response limma thresholded conduct, message=FALSE}
+#limma_results_drug_thres <- NULL
+##if(is.null(limma_results)){limma_results <- NULL}
+#
+#drugs_to_limma <- drug_and_proteomics_drug$rowname %>% unique()
+#
+#
+#for(i in 1:length(drugs_to_limma)){
+#  m <- drugs_to_limma[i]
+#  print(m)
+#  limma_results_drug_thres <- bind_rows(limma_results_drug_thres, Calculate_Limma_drug_thres(assay_data = assay(multiomics_MAE[prot_few_nas , ,"proteomics"]), dr = #m))
+#  #return(limma_results)
+#}
+#
+#limma_results_drug_thres$mut %>% unique
+```
+
+#### Plot limma results
+```{r proteomics and drug response limma thresholded plot, eval=TRUE, echo=TRUE, fig.show="asis", fig.height=30, warning=FALSE}
+#ggplot(data = limma_results_drug_thres) +
+#  geom_histogram(aes(pvalue.limma, alpha = 0.5), bins = 40) +
+#  guides(alpha = FALSE) +
+#  xlab("p-value") +
+#  facet_wrap( ~ mut +comparison, scale = "free_y", ncol = 4) +
+#  coord_cartesian(xlim = c(0, 1)) +
+#  pp_sra
+```
+
+#### Limma Annotation of hits
+### Limma Annotation of hits
+#### Function
+```{r limma annotation hits other mut function, eval=TRUE, echo=TRUE}
+#Annotate_Limma_Results <- function(limma_results){
+#  fdr_hit_threshold <- 0.001
+#  fdr_candidate_threshold = 0.01
+#  fc_hit_threshold <- log2(1.5)
+#  fc_candidate_threshold <- log2(1.2)
+#  
+#   limma_results$hit <-
+#    with(limma_results, ifelse(fdr <= fdr_hit_threshold & abs(logFC) >= log2(fc_hit_threshold), TRUE, FALSE))
+#  limma_results$hit_annotation <- with(limma_results, 
+#                                       ifelse(fdr <= fdr_hit_threshold & abs(logFC) >= log2(fc_hit_threshold), 
+#                                              "hit", 
+#                                              ifelse(fdr <= fdr_candidate_threshold & abs(logFC) >= log2(fc_candidate_threshold),
+#                                                     "candidate", "no hit")))
+#  limma_results$hit_annotation <- factor(limma_results$hit_annotation, ordered = TRUE, levels = c("hit", "candidate", "no hit"))
+#  return(limma_results)
+#}
+```
+
+
+##### Annotate
+```{r proteomics and drug response limma thresholded annotation conduct, eval=TRUE, echo=TRUE, warning=FALSE}
+#limma_results_drug_thres <- Annotate_Limma_Results(limma_results_drug_thres)
+#
+#with(limma_results_drug_thres, table(mut, hit_annotation)) %>% as_tibble() %>% 
+#  spread(hit_annotation, n) %>% arrange( `no hit`) %>% 
+#  dplyr::select(mut, hit, candidate, `no hit`) %>% as.data.frame()
+#
+#with(limma_results_drug_thres, table(mut, hit)) %>% as_tibble() %>% 
+#  filter(hit==TRUE) %>%
+#  arrange(desc(n)) %>%
+#  mutate(mut = as.factor(mut)) %>%
+#  mutate(mut = factor(mut, levels = .$mut)) %>%
+#  ggplot(aes(mut, n)) +
+#  geom_col() +
+#  ylab("Number of differentially abundant proteins") +
+#  pp_sra_noguides_tilted
+#
+#with(limma_results_drug_thres %>% mutate(dir=sign(logFC)), table("mut"=paste0(mut,"dir", dir), hit)) %>% as_tibble() %>% 
+#  separate(mut, into = c("mut", "dir"), sep = "dir") %>%
+#  mutate(dir=as.numeric(dir)) %>%
+#  mutate(n=n*dir) %>%
+#  filter(hit==TRUE) %>%
+#  arrange(desc(n)) %>%
+#  mutate(mut = as.factor(mut)) %>%
+#  mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+#  ggplot(aes(mut, n)) +
+#  geom_col(aes(fill=as.character(dir))) +
+#  ylab("Number of differentially abundant proteins") +
+#  pp_sra_noguides_tilted +
+#  scale_fill_manual(values = c("#0571b0", "#ca0020")) +
+#  geom_hline(yintercept = 0, color="darkgray")
+```
+
+#### Plot hits in volcano plot 
+```{r proteomics and drug response limma thresholded volcano, fig.height=15, warning=FALSE}
+#dr_with_hits <- limma_results_drug_thres %>% filter(hit_annotation!= "no hit") %>% .$mut %>% unique
+#
+#ggplot(data = limma_results_drug_thres %>% filter(mut %in% dr_with_hits), 
+#       aes(logFC, -log10(pvalue), colour = hit_annotation)) +
+#  geom_vline(aes(xintercept = 0)) +
+#  geom_point() +
+#  geom_text(aes(label = rowname), 
+#            data = subset(limma_results_drug_thres, hit_annotation != "no hit"), 
+#            vjust = 0, nudge_y = 0.1, size = 2, check_overlap = FALSE) +
+#  facet_wrap( ~ mut , ncol = 2) +
+#  xlab("log2(fold change)") +
+#  scale_colour_hue() +
+#  pp_sra
+```
+
+## Consensus cluster and drug response
+### Boxplot groups overview
+```{r proteomics and drug response CCP, message=FALSE, fig.height=50}
+#longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  #filter(rowname %in% c("Ibrutinib_3", "Fludarabine_3")) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  pp_sra_noguides + 
+#  scale_fill_manual(values = colors_CCP) +
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  stat_compare_means(label.y = 1.6) + 
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey")
+```
+
+### Boxplots specific drugs
+```{r proteomics and drug response CCP sel, message=FALSE}
+#drugs_CCP_BCR_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c("Ibrutinib_2", "Idelalisib_2", "Duvelisib_3")) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  pp_sra + 
+#  scale_fill_manual(values = colors_CCP) +
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  stat_compare_means( label.y = 1.6) + 
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+#drugs_CCP_BCR_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c( "Duvelisib_3", "Idelalisib_3", "Ibrutinib_2")) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  pp_sra + 
+#  scale_fill_manual(values = colors_CCP) +
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+#drugs_CCP_BCR_plot + theme(aspect.ratio = 1) + guides(fill=FALSE)
+
+drugs_CCP_Duve_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Duvelisib_3")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Duve_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_Ibru_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Ibrutinib_2")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Ibru_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_Ide_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Idelalisib_3")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Ide_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_BAY_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "BAY61-3606_2")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_BAY_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_Selu_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Selumetinib_2")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Selu_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+#drugs_CCP_DuveIde_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c( "Duvelisib_3", "Idelalisib_3")) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  pp_sra + 
+#  scale_fill_manual(values = colors_CCP) +
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+#
+#drugs_CCP_DuveIde_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+#  stat_compare_means( label.y = 1.6)
+
+#drugs_CCP_chemo_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c("Doxorubicine_3", "Fludarabine_2", "Cytarabine_2")) %>%
+#  mutate(rowname = as.factor(rowname)) %>%
+#  mutate(rowname= factor(rowname, levels =c("Doxorubicine_3", "Fludarabine_2", "Cytarabine_2") )) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  scale_fill_manual(values = colors_CCP) +
+#  pp_sra + 
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  stat_compare_means( label.y = 1.6) + 
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+#drugs_CCP_chemo_plot + theme(aspect.ratio = 1) + guides(fill=FALSE)
+
+drugs_CCP_Doxo_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c("Doxorubicine_3")) %>%
+  mutate(rowname = as.factor(rowname)) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  scale_fill_manual(values = colors_CCP) +
+  pp_sra + 
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Doxo_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_Cyta_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c("Cytarabine_2")) %>%
+  mutate(rowname = as.factor(rowname)) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  scale_fill_manual(values = colors_CCP) +
+  pp_sra + 
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Cyta_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_Flu_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Fludarabine_2")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Flu_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+#drugs_CCP_DoxoCyta_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c("Doxorubicine_3", "Cytarabine_2")) %>%
+#  mutate(rowname = as.factor(rowname)) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  scale_fill_manual(values = colors_CCP) +
+#  pp_sra + 
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+#drugs_CCP_DoxoCyta_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+#  stat_compare_means( label.y = 1.6)
+
+drugs_CCP_proteasome_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c("Carfilzomib_1", "Ixazomib_2")) %>%
+  mutate(rowname = as.factor(rowname)) %>%
+  mutate(rowname= factor(rowname, levels =c("Carfilzomib_1", "Ixazomib_2") )) %>%
+  ggplot(aes( PG, value )) + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 1) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)") 
+
+drugs_CCP_proteasome_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+# longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c("CPI-169_3")) %>%
+#  mutate(rowname = as.factor(rowname)) %>%
+#  mutate(rowname= factor(rowname, levels =c("CPI-169_3") )) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  scale_fill_manual(values = colors_CCP) +
+#  pp_sra_noguides + 
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  stat_compare_means( label.y = 1.6) + 
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  theme(aspect.ratio = 1) +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)") 
+ 
+ drugs_CCP_Ena_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Enasidenib_1")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Ena_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+
+# drugs_CCP_CPI_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  filter(rowname %in% c( "CPI-169_3")) %>%
+#  ggplot(aes( PG, value )) + 
+#  geom_boxplot(aes(fill=PG)) + 
+#  pp_sra + 
+#  scale_fill_manual(values = colors_CCP) +
+#  geom_beeswarm() +
+#  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey") +
+#  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+#
+#drugs_CCP_CPI_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+#  stat_compare_means( label.y = 1.6)
+
+ drugs_CCP_Thio_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  filter(rowname %in% c( "Thioguanine_3")) %>%
+  ggplot(aes( PG, value )) + 
+  geom_boxplot(aes(fill=PG)) + 
+  pp_sra + 
+  scale_fill_manual(values = colors_CCP) +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox", label="p.signif", label.y = 1.4, ref.group = ".all.", hide.ns = TRUE, size=5) +
+  facet_wrap(~rowname, ncol = 5) +
+  coord_cartesian(ylim = c(0,1.6)) +
+  geom_hline(yintercept = 1, color="darkgrey") +
+  ylab("Norm. percentage \n alive cells") + xlab("Proteomics groups (PG)")
+
+drugs_CCP_Thio_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
+  stat_compare_means( label.y = 1.6)
+```
+
+### PG5 vs mean other groups
+
+```{r proteomics and drug response CCP boxplot PG5, message=FALSE, fig.height=50}
+#longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  #filter(rowname %in% c("Ibrutinib_3", "Fludarabine_3")) %>%
+#  ggplot(aes( PG==5, value )) + 
+#  geom_boxplot(aes(fill=PG==5)) + 
+#  pp_sra_noguides + 
+#  scale_fill_manual(values = c("grey", colors_CCP[5])) +
+#  geom_beeswarm() +
+#  stat_compare_means(label.y = 1.6, size=2) + 
+#  stat_compare_means(label.y = 1.4, label = "p.signif", hide.ns = TRUE, size=5) + 
+#  facet_wrap(~rowname, ncol = 5) +
+#  coord_cartesian(ylim = c(0,1.6)) +
+#  geom_hline(yintercept = 1, color="darkgrey")
+```
+
+### Test drug response PG5 versus other groups
+```{r proteomics and drug response PG5 test, message=FALSE}
+df_for_ttest <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+  filter(!is.na(PG)) %>%
+  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+  mutate(PG5 = PG==5) 
+
+pval_drs <- sapply( unique(df_for_ttest$rowname), function(dr){
+  dr_other <- df_for_ttest %>%
+    filter(rowname == dr, PG5 == FALSE) %>%
+    .$value 
+  dr_PG5 <- df_for_ttest %>%
+    filter(rowname == dr, PG5 == TRUE) %>%
+    .$value 
+  test <- wilcox.test( dr_PG5, dr_other )
+  return(c("p"= test$p.value, 
+              "Difference percentage alive cells \nPG5 vs. all other groups"= mean(dr_PG5) - mean(dr_other)  ) )
+}) %>% t %>% as.data.frame() %>% 
+  rownames_to_column("Drug_c") %>% as_tibble()
+pval_drs <- pval_drs %>%  
+  mutate(FDR = p.adjust(p, method = "BH" )) %>% 
+  separate(Drug_c , c("Drug", "c"), sep = "_")
+
+volcano_PG5_drugs <- pval_drs %>%
+  ggplot(aes(`Difference percentage alive cells \nPG5 vs. all other groups`, -log10(p) )) +
+  geom_point(aes(color = FDR < 0.25 )) +
+  #geom_text(data = pval_drs %>% filter(FDR < 0.25),
+  #          aes(label = Drug_c,
+  #              x= `Difference percentage alive cells \nPG5 vs. all other groups`+0.005), size= 2, hjust=0) +
+  pp_sra +
+  scale_color_manual(values = c("grey", colors_CCP[5] ))
+volcano_PG5_drugs
+
+pval_drs %>% arrange(FDR)
+```
+
+
+### Heatmap 
+```{r}
+#phDrugs_CCP <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+#  filter(!is.na(PG)) %>%
+#  filter( !( grepl("DMSO", rowname)   ) )  %>% 
+#  separate(rowname, into = c("Drug", "conc"), sep = "_") %>% 
+#  group_by(Drug, primary, PG) %>%
+#  dplyr::summarise(mean_viability = mean(value)) %>% 
+#  ungroup()
+#  
+#phDrugs_CCP_mat <- phDrugs_CCP %>% 
+#  dplyr::select(primary, Drug, mean_viability) %>%
+#  spread(Drug, mean_viability)
+#phDrugs_CCP_mat <- phDrugs_CCP_mat %>% as.data.frame()
+#rownames(phDrugs_CCP_mat) <- phDrugs_CCP_mat$primary
+#phDrugs_CCP_mat <- phDrugs_CCP_mat[, -1] %>% as.matrix()
+#
+#phDrugs_CCP_ann <- phDrugs_CCP %>% dplyr::select(primary, PG) %>%
+#  unique() %>% as.data.frame()
+#rownames(phDrugs_CCP_ann) <- phDrugs_CCP_ann$primary
+#phDrugs_CCP_ann <- phDrugs_CCP_ann  %>% dplyr::select(PG)
+#
+#ann_colors = list(
+#  PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= colors_CCP[5], "6"= colors_CCP[6] ))
+#
+#pheatmap(phDrugs_CCP_mat, annotation_row = phDrugs_CCP_ann, 
+#         annotation_colors = ann_colors)
+#pheatmap(phDrugs_CCP_mat[rownames(phDrugs_CCP_ann)[order(phDrugs_CCP_ann$PG)],], annotation_row = phDrugs_CCP_ann, 
+#         annotation_colors = ann_colors, cluster_rows  = FALSE, scale="column")
+```
+
+## Drug response and correlation with MOFA factors
+### Visualise some drug-LF associations which were found to be significantly correlated in Eva's perfom_MOFA_analysis script
+```{r drugs and LF}
+#load("/Volumes/sd17b003/Sophie/Eva/Master_thesis/data/MOFA_models/proteomics_model_noDrug_factors.RData")
+#MOFA_fact <- proteomics_model_noDrug_factors %>% as.data.frame()
+#MOFA_fact$primary <- rownames(MOFA_fact)
+#MOFA_fact_drug <- left_join(MOFA_fact, 
+#          wideFormat(multiomics_MAE[ c("Ibrutinib_1", "Ibrutinib_2", "Ibrutinib_3", "IRAK4 Inhibitor, Compound 26_3") , , "drug_resp_mono"], colDataCols = "PG") #%>% as_tibble())
+#
+#MOFA_fact_drug %>% 
+#  ggplot(aes(LF2, drug_resp_mono_Ibrutinib_1)) + 
+#  geom_point() +
+#  pp_sra +
+#  geom_smooth(method = "lm") +
+#  stat_cor(method = "spearman") +
+#  coord_cartesian(ylim= c(0, 1.3) )
+#
+#MOFA_fact_drug %>% 
+#  ggplot(aes(LF1, drug_resp_mono_IRAK4.Inhibitor..Compound.26_3)) + 
+#  geom_point() +
+#  pp_sra +
+#  geom_smooth(method = "lm") +
+#  stat_cor(method = "spearman") +
+#  coord_cartesian(ylim= c(0, 1.8) )
+#
+#MOFA_fact_drug %>% 
+#  ggplot(aes(LF1, LF2, color=drug_resp_mono_Ibrutinib_1)) + 
+#  geom_point(size=5) +
+#  pp_sra
+```
+
+# Save important plots
+```{r save image}
+save(#drugs_CCP_BCR_plot,
+  drugs_CCP_proteasome_plot, 
+  #drugs_CCP_chemo_plot, 
+     #XPO_selinexor_plot, 
+  XPO_selinexor_plot_3, drugs_CCP_Doxo_plot, drugs_CCP_Duve_plot, 
+     TP53_Nutlin_plot_3, drugs_CCP_Ide_plot, drugs_CCP_Ibru_plot, 
+     drugs_CCP_Cyta_plot, 
+  #drugs_CCP_DoxoCyta_plot, drugs_CCP_DuveIde_plot,
+     drugs_CCP_BAY_plot, drugs_CCP_Flu_plot, drugs_CCP_Selu_plot,
+     heatmap_drug_drug_cor, heatmap_drug_drug_cor_legend,
+     drugs_CCP_Ena_plot, 
+  #drugs_CCP_CPI_plot, 
+  drugs_CCP_Thio_plot,
+     volcano_PG5_drugs,
+file = "RData_plots/CLL_Proteomics_Drugs_Plots.RData")
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```

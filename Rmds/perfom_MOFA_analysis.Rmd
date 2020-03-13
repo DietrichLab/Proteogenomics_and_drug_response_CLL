@@ -1,0 +1,540 @@
+---
+title: "MOFA analysis of multi-omics CLL data"
+output: 
+  BiocStyle::html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+editor_options:
+  chunk_output_type: console
+---
+
+# Setup
+## load packages
+```{r load packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(MultiAssayExperiment)
+library(MOFA)
+library(pheatmap)
+library(UpSetR)
+library(reticulate)
+library(DESeq2)
+library(ggpubr)
+```
+
+## paths & environments
+```{r specify python environment}
+# specify conda environment to ensure python and required modules are available
+use_condaenv(condaenv = "mofaEnvironment", required = TRUE)
+```
+
+```{r output path}
+model_output_path <- file.path(getwd(),"data/MOFA_models")
+```
+
+
+## load data
+```{r load data}
+load(file.path(getwd(),"data/multiomics_MAE_CLL.RData"))
+multiomics_MAE <- multiomics_MAE_CLL
+```
+
+```{r load gene sets}
+# all gene sets were downloaded from MSigDB (v7.0)
+# Subramanian, Tamayo, et al. (2005, PNAS 102, 15545-15550)
+
+# load gene ontology gene sets from MSig db with hgnc identifiers
+load(file.path(getwd(),"data/GO_gene_sets.RData"))
+```
+
+
+## general plot themes
+```{r general plot themes}
+source(file.path(getwd(),"Figure_layouts.R"))
+```
+
+## function for IGHV/tri12 comparison plot
+```{r factor scatter plotting function}
+plotFactorComparison <- function(factors = NULL,
+                                 model_factors = NULL){
+  IGHV_tri12_df <- model_factors %>% as.data.frame() %>% 
+                    dplyr::select(factors) %>% 
+                    rownames_to_column(var = "patient_ID") %>% 
+                    left_join(.,
+                            dplyr::select(as.data.frame(colData(
+                              multiomics_MAE)), 
+                              c("patient_ID", "trisomy12",
+                                "IGHV")), by = "patient_ID") %>%
+                    column_to_rownames(var="patient_ID")
+
+  IGHV_tri12_df <- IGHV_tri12_df %>% mutate(status = 
+                    ifelse(trisomy12==1 & IGHV == "M", "trisomy12&IGHVmutated",
+                    ifelse(trisomy12 == 0 & IGHV == "M","IGHVmutated",
+                    ifelse(trisomy12 == 1 & IGHV == "U","trisomy12",
+                    ifelse(trisomy12 == 0 & IGHV == "U","IGHVunmutated",
+                           NA))))) %>%
+                    filter(!is.na(status))
+                    
+
+
+  ggscatter(IGHV_tri12_df, x = factors[1], y = factors[2], fill = "status",
+            color = "status", palette = c("#bebada", "#fb8072","#8dd3c7",
+                                          "#ffff4e"), 
+            shape = 21, size = 3.5,
+            ellipse = FALSE) +
+    theme(legend.position = "right")
+  }
+```
+
+
+# Inspect data object
+```{r inspect data object}
+MultiAssayExperiment::upsetSamples(multiomics_MAE)
+
+# # display parts ot the data object
+# experiments(multiomics_MAE)
+# sampleMap(multiomics_MAE)
+# metadata(multiomics_MAE)
+
+knitr::kable(colnames(colData(multiomics_MAE)), format = "markdown", 
+             caption = "Patient data", col.names = "patient_metadata")
+```
+
+# Preprocess data
+## RNA seq & proteomcis IDs
+```{r joint IDs}
+# find joint features between proteomics and RNA seq
+proteomics_IDs <- as.data.frame(multiomics_MAE@ExperimentList$proteomics)%>% 
+                    rownames_to_column(.) %>% 
+                    left_join(., 
+                              multiomics_MAE@metadata$gene_symbol_mapping, 
+                              by = c("rowname" = "hgnc_symbol")) %>%
+                    .[,c("rowname","ensembl_gene_id")]
+
+RNAseq_IDs <- as.data.frame(multiomics_MAE@ExperimentList$RNAseq_norm) %>% 
+                rownames_to_column(.) %>%
+                left_join(., multiomics_MAE@metadata$gene_symbol_mapping,
+                          by = c("rowname" = "ensembl_gene_id")) %>%
+                .[,c("rowname","hgnc_symbol")]
+
+joint_IDs <- inner_join(proteomics_IDs, RNAseq_IDs, 
+                    by = c("ensembl_gene_id" = "rowname"))
+
+
+# filter for the joint IDs and make hgnc symbol the general identifier
+multiomics_MAE@ExperimentList$proteomics <- 
+                              multiomics_MAE@ExperimentList$proteomics %>%
+                              .[c(joint_IDs$hgnc_symbol),]
+
+multiomics_MAE@ExperimentList$RNAseq_norm <- 
+                              multiomics_MAE@ExperimentList$RNAseq_norm %>%
+                              .[c(joint_IDs$ensembl_gene_id),] %>%
+                              as.data.frame() %>%
+                              rownames_to_column() %>% 
+                              left_join(.,joint_IDs,
+                                        by = c("rowname" = 
+                                                 "ensembl_gene_id")) %>%
+                              column_to_rownames(., var = "hgnc_symbol") %>%
+                              select(-c("rowname", "rowname.y"))
+```
+
+
+## Proteomics
+Proteins which were not detected in 10 or more patients were excluded. Only the top 2000 proteins with the highest variance across samples were considered for further analyses.  
+```{r proteomics preprocessing}
+proteomics_df <- as.matrix(multiomics_MAE@ExperimentList$proteomics)
+
+#drop all features with more than 10 NAs
+proteomics_df <- proteomics_df[rowSums(is.na(proteomics_df)) <= 10,]
+
+# keep top 2000 proteins with highest variance
+proteomics_vars <- rowVars(proteomics_df, na.rm = TRUE)
+proteomics_df <- proteomics_df[order(proteomics_vars,
+                                     decreasing = T)[1:2000],]
+
+hist(rowVars(proteomics_df, na.rm = TRUE), breaks  = 2000,
+     main = "Variance of proteomics data after filtering", ylim = c(0,100),
+     xlab = "variance of protein abundance")
+
+multiomics_MAE@ExperimentList$proteomics <- proteomics_df
+```
+
+
+## RNA seq
+Transcripts with a mean normalized abundance of 200 or lower across all patients were excluded. Size factors were already calculated. Variance stabilization transformation was performed. The 2000 transcripts with the highest variance are considered for further analyses. Replicated samples were averaged.
+```{r rna seq preprocessing}
+RNAseq_df <- as.matrix(assays(multiomics_MAE)$RNAseq_norm)
+
+# keep top 2000 rows with the highest variance 
+RNAseq_vars <- rowVars(RNAseq_df)
+RNAseq_df <- RNAseq_df[order(RNAseq_vars, decreasing = T)[1:2000],]
+pheatmap(RNAseq_df, cluster_cols = FALSE, cluster_rows = TRUE, 
+         show_rownames = FALSE, na_col = "dark grey")
+
+multiomics_MAE@ExperimentList$RNAseq_norm <- RNAseq_df
+```
+
+
+## Drug screen data
+Viability values over 1.5 were removed and considered as outliers. rowMeans and rowVars cut offs were applied. If a drug at a certain concentration showed a mean viability under 0.3, it was removed from the data set. In addition, drug-concentration-combination were excluded from this analysis, if the mean viability was high (0.9-1.5), but the variance was low (equal or smaller than 0.02). 
+```{r preprocess drug screen data, message=FALSE}
+# change β to beta in rownames &
+# set threshold of 1.5 and replace values above with NA
+# apply rowMeans and rowVars cut offs
+
+drug_resp <- assays(multiomics_MAE)$drug_resp_mono
+rownames(drug_resp) <- gsub("\u03b2", "beta", rownames(drug_resp))
+drug_resp[drug_resp >= 1.5] <- NA
+drug_resp$rowvars <-  rowVars(as.matrix(drug_resp), na.rm = TRUE)
+drug_resp$rowmeans <- rowMeans(as.matrix(drug_resp), na.rm = TRUE)
+
+drug_resp <- drug_resp %>% rownames_to_column() %>% 
+                   filter(rowmeans > 0.3) 
+drug_resp <- drug_resp %>% 
+                    filter(between(rowmeans, 0.9, 1.5)) %>%
+                    filter(rowvars <= 0.02) %>% 
+                    anti_join(drug_resp,.,)
+drug_resp <- drug_resp %>% select(-c("rowvars", "rowmeans")) %>% 
+                    column_to_rownames()
+multiomics_MAE@ExperimentList$drug_resp_mono <- drug_resp
+```
+
+## create genetics set
+This data set combines SNPs, fish data, complex aberrant caryotype and IGHV mutation status. 
+```{r create genetics data sets, warning=FALSE}
+genetics_df <- list(multiomics_MAE@ExperimentList$SNPs,
+                    multiomics_MAE@ExperimentList$chrom_abber,
+                    multiomics_MAE@ExperimentList$health_record_bin[
+                      c("komplex_abberant_karyotype", "IGHV_mutated"),])%>%
+  lapply(., function(df){rownames_to_column(as.data.frame(df))}) %>% 
+  bind_rows(.) %>% 
+  column_to_rownames(., var = "rowname")
+genetics_df <- genetics_df[, c(colnames(
+                multiomics_MAE@ExperimentList$health_record_bin))]
+
+multiomics_MAE <- c(multiomics_MAE, genetics = genetics_df, mapFrom = 5L)
+```
+
+## create clinical feature set
+This data set includes treatment status, gender and age category. 
+```{r create set with clinical features, warning=FALSE}
+clinical_features_df <- multiomics_MAE@ExperimentList$health_record_bin[c(
+                          "treated", "gender_binary", "elderly_patient"),]
+clinical_features_df <- clinical_features_df[, c(colnames(
+                          multiomics_MAE@ExperimentList$health_record_bin))]
+
+multiomics_MAE <- c(multiomics_MAE, 
+                    clinical_features = clinical_features_df,
+                    mapFrom = 5L)
+```
+
+
+# MOFA analysis
+## Prepare MOFA analysis
+```{r }
+proteomics_noDrug_obj <- multiomics_MAE[,,c("genetics", "proteomics", 
+                                            "RNAseq_norm")]
+proteomics_noDrug_obj <- createMOFAobject(proteomics_noDrug_obj) 
+plotDataOverview(proteomics_noDrug_obj)
+```
+
+```{r }
+TrainOptions <- getDefaultTrainOptions()
+ModelOptions <- getDefaultModelOptions(proteomics_noDrug_obj)
+DataOptions <- getDefaultDataOptions()
+
+TrainOptions$DropFactorThreshold <- 0.015 # % variance explained by factor
+TrainOptions$tolerance <- 0.01 # 0.01 is recommended
+TrainOptions$seed <- 2019 #random number
+```
+
+## Model creation/selection
+```{r }
+# ## model loop: run once -> afterwards just load models (see below)
+# 
+# n_inits <- 10 # number of interations
+# model_list_proteomics_noDrug <- lapply(seq_len(n_inits), function(it) {
+#                            TrainOptions$seed <- 2019 + it
+# 
+#                             MOFAobject <- prepareMOFA(
+#                               proteomics_noDrug_obj,
+#                               DataOptions = DataOptions,
+#                               ModelOptions = ModelOptions,
+#                               TrainOptions = TrainOptions)
+#                             runMOFA(MOFAobject,
+#                                     outfile = paste0(model_output_path,
+#                                                      "/", Sys.Date(),
+#                                             "_proteomics_model_noDrug_",
+#                                                      it,
+#                                                      ".hdf5"))
+#                             })
+# 
+# save(model_list_proteomics_noDrug,
+#      file = paste0(model_output_path, "/proteomics_models_noDrug_list.RData"))
+# 
+
+# loads the saved model list
+load(paste0(model_output_path, "/proteomics_models_noDrug_list.RData"))
+
+compareModels(model_list_proteomics_noDrug) + pp_sra_noguides_tilted
+compareFactors(model_list_proteomics_noDrug)
+
+# select the best model
+proteomics_model_noDrug <- selectModel(model_list_proteomics_noDrug, 
+                                       plotit = FALSE)
+print(paste0("model ", proteomics_model_noDrug@TrainOptions$seed - 2019, 
+             " selected"))
+
+# save factors of chosen model (loadings from patients)
+proteomics_model_noDrug_factors <- getFactors(proteomics_model_noDrug,
+                                       factors = "all",
+                                       as.data.frame = FALSE)
+save(proteomics_model_noDrug_factors,
+     file = paste0(model_output_path, 
+                   "/proteomics_model_noDrug_factors.RData"))
+
+# save weights of chosen model (loadings from features)
+proteomics_model_noDrug_weights <- getWeights(proteomics_model_noDrug,
+                                       factors = "all",
+                                       as.data.frame = FALSE)
+save(proteomics_model_noDrug_weights,
+     file = paste0(model_output_path, 
+                   "/proteomics_model_noDrug_weights.RData"))
+```
+
+## Inspect model
+```{r , fig.height=10}
+# plots to inspect the chosen model
+plotVarianceExplained(proteomics_model_noDrug)
+plotFactorCor(proteomics_model_noDrug)
+
+for (data_set in names(proteomics_noDrug_obj@InputData)){
+  plotWeightsHeatmap(
+          proteomics_model_noDrug, 
+          view = data_set, 
+          factors = 1:proteomics_model_noDrug@Dimensions$K,
+          show_colnames = FALSE)
+    print(data_set)
+}
+```
+
+```{r temporary, echo=FALSE, message=FALSE, warning=FALSE}
+load(file.path(getwd(),"data/multiomics_MAE.RData"))
+
+# change β to beta in rownames &
+# set threshold of 1.5 and replace values above with NA
+# apply rowMeans and rowVars cut offs
+
+drug_resp <- assays(multiomics_MAE)$drug_resp_mono
+rownames(drug_resp) <- gsub("\u03b2", "beta", rownames(drug_resp))
+drug_resp[drug_resp >= 1.5] <- NA
+drug_resp$rowvars <-  rowVars(as.matrix(drug_resp), na.rm = TRUE)
+drug_resp$rowmeans <- rowMeans(as.matrix(drug_resp), na.rm = TRUE)
+
+drug_resp <- drug_resp %>% rownames_to_column() %>% 
+                   filter(rowmeans > 0.3) 
+drug_resp <- drug_resp %>% 
+                    filter(between(rowmeans, 0.9, 1.5)) %>%
+                    filter(rowvars <= 0.02) %>% 
+                    anti_join(drug_resp,.,)
+drug_resp <- drug_resp %>% select(-c("rowvars", "rowmeans")) %>% 
+                    column_to_rownames()
+multiomics_MAE@ExperimentList$drug_resp_mono <- drug_resp
+```
+
+
+### IGHV & trisomy12
+Factor loadings from patients on factors which are dominated by IGHV mutation status and trisomy12 are ploted against each other.
+```{r factor scatter plot no drug}
+plotFactorComparison(factors = c("LF1", "LF2"),
+                     model_factors = proteomics_model_noDrug_factors)
+```
+
+### Top 10 weights
+Top 10 features with the highest/lowest loadings are depicted per data view and factor.   
+
+#### genetics
+```{r}
+lapply(c( 1:proteomics_model_noDrug@Dimensions$K), function(factor_num){
+           plotTopWeights(proteomics_model_noDrug, 
+                          view= "genetics", 
+                          factor = factor_num)})
+```
+
+#### proteomics
+```{r}
+lapply(c( 1:proteomics_model_noDrug@Dimensions$K), function(factor_num){
+           plotTopWeights(proteomics_model_noDrug, 
+                          view= "proteomics", 
+                          factor = factor_num)})
+```
+
+#### RNA seq
+```{r}
+lapply(c( 1:proteomics_model_noDrug@Dimensions$K), function(factor_num){
+           plotTopWeights(proteomics_model_noDrug, 
+                          view= "RNAseq_norm", 
+                          factor = factor_num)})
+```
+
+### Enrichment analysis
+```{r general parameter, model without drug resp}
+views <- c("proteomics", "RNAseq_norm")
+
+# term enrichment is performed for all factors in the model
+proteomics_factors <- c(1:proteomics_model_noDrug@Dimensions$K)
+RNAseq_factors <- c(1:proteomics_model_noDrug@Dimensions$K)
+```
+
+#### GO term enrichment
+```{r }
+FDR <- 0.1 # preliminary FDR filter
+proteomics_model_gsa <- lapply(views, function(view){
+  gsea <- runEnrichmentAnalysis(
+    proteomics_model_noDrug,
+    view = view,
+    factors = "all",
+    local.statistic = "loading",
+    global.statistic = "mean.diff",
+    statistical.test = "parametric",
+    feature.sets = GO_sets,
+    alpha = FDR
+  )
+  return(gsea)
+})
+
+# save enrichments
+save(proteomics_model_gsa, file = paste0(model_output_path,
+                                         "/proteomics_model_noDrug_GOgsea.RData"))
+
+
+print(views[[1]])
+plotEnrichmentBars(proteomics_model_gsa[[1]], alpha=FDR)
+
+print(views[[2]])
+plotEnrichmentBars(proteomics_model_gsa[[2]], alpha=FDR)
+
+# select interesting factors with sign. pathways
+proteomics_factors_keep <- lapply(proteomics_model_gsa[[1]]$sigPathways, 
+                                  function(ls){
+                                    ifelse(length(ls) != 0 , TRUE, FALSE)
+                                  }) %>% unlist 
+proteomics_factors_keep <- intersect(proteomics_factors,
+                             c(1:length(proteomics_model_gsa[[1]]$sigPathways)
+                               )[proteomics_factors_keep]) 
+
+
+RNAseq_factors_keep <- lapply(proteomics_model_gsa[[2]]$sigPathways, 
+                              function(ls){
+                                ifelse(length(ls) != 0 , TRUE, FALSE)
+                              }) %>% unlist
+RNAseq_factors_keep <- intersect(RNAseq_factors,
+                                 c(1:length(proteomics_model_gsa[[2]]$sigPathways)
+                                 )[RNAseq_factors_keep]) 
+
+
+```
+
+##### Proteomics
+```{r, fig.width=15, fig.height=13 }
+lapply(proteomics_model_gsa[[1]]$sigPathways, as.data.frame)
+
+fseaplots <- lapply(proteomics_factors_keep, function(factor) {
+  plotEnrichmentDetailed(
+    proteomics_model_noDrug,
+    fsea.results =  proteomics_model_gsa[[1]],
+    factor = factor,
+    alpha = FDR,
+    max.pathways = 15, # The top number of pathways to display
+    feature.sets = GO_sets,
+    max.genes = 10
+  )
+})
+
+lapply(c(1:length(proteomics_factors_keep)), function(i){
+  cowplot::plot_grid(fseaplots[[i]], labels = paste("proteomics factor",
+                                                    proteomics_factors_keep[[i]]))
+})
+```
+
+##### Enrichment barplot LF9
+```{r, plot GO term enrichment LF9}
+# plotting parameter
+cex_text_plot <- 8/3
+
+# plot enriched GO terms in top loading proteins of LF9
+GO_LF9_bar_plot <-  proteomics_model_gsa[[1]]$pval.adj %>%
+  as.data.frame() %>% rownames_to_column() %>%
+  filter(rowname %in% proteomics_model_gsa[[1]]$sigPathways[[9]]) %>%
+  dplyr::select(rowname, LF9) %>%   arrange(LF9) %>%
+  mutate(pathway = as.factor(rowname)) %>%
+  mutate(pathway = factor(pathway, levels = rev(pathway))) %>%
+  ggplot(aes(pathway, -log10(LF9), fill=grepl("RNA", pathway ) )) +
+  geom_col() + coord_flip() + pp_sra +
+  theme(axis.title.y = element_blank()) +
+  ylab("-log10(p-value enrichment)") +
+  scale_fill_manual(values = c("grey", colors_CCP[5])) +
+  annotate(geom="text", x=2.5, y=5, label="RNA Splicing",
+           color=colors_CCP[5], size= cex_text_plot) +
+  theme(legend.position = 'none')
+
+GO_LF9_bar_plot
+```
+
+
+### Factor-Drug response correlation
+```{r factor-response correlation, message=FALSE, warning=FALSE}
+# retrieve loadings 
+loadings <- proteomics_model_noDrug_factors %>% as.data.frame() %>%
+  rownames_to_column(var = "primary")
+
+# prepare drug response df
+drug_resp <- longFormat(multiomics_MAE[,,"drug_resp_mono"]) %>%
+                as.data.frame()
+drug_resp <- drug_resp %>% filter( !( grepl("DMSO", rowname) | 
+                                      grepl(" \\+ ", rowname)  |
+                                      grepl("SSZ", rowname) | 
+                                      grepl("phenyl",rowname) | 
+                                      grepl("Vitamin D",rowname) ) ) 
+drug_resp <- drug_resp[,c("primary", "rowname","value")] %>% 
+              spread(rowname, value)
+
+# order dfs based on patient IDs
+drug_resp <- drug_resp[order(drug_resp$primary),]
+loadings <- loadings[order(loadings$primary),]
+
+# calculate correlations
+drug_factor_cor <- lapply(colnames(loadings)[-1], function(factor_name){
+    lapply(colnames(drug_resp[-1]), function(drug){
+      ct <- cor.test(drug_resp[,drug], loadings[,factor_name],
+                     method = "kendall")
+      return(c("drug"=drug, "factor"=factor_name, "p_value"=ct$p.value,
+             ct$estimate))
+    }) %>% do.call(bind_rows,.)
+  }) %>% do.call(bind_rows,.) %>% mutate(p_value=as.numeric(p_value), 
+                                       tau=as.numeric(tau))
+
+# p-value adjustments and annotation
+drug_correlations <- drug_factor_cor %>% 
+                      mutate(padj=p.adjust(p_value, method = "BH")) %>%
+                      mutate(drug_name=gsub("\\_[1,2,3]", "", drug) ) %>% 
+                      dplyr::filter(padj<0.1) %>%
+                      left_join(.,
+                        multiomics_MAE@metadata$drugs_functional_groups, 
+                        by = c("drug_name"="Drug")) %>%
+                      select(-drug_name)
+                    
+
+
+DT::datatable(drug_correlations)
+```
+
+# Session Info
+```{r session info}
+sessionInfo()
+```

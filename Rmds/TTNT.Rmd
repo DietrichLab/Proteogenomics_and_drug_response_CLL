@@ -1,0 +1,121 @@
+---
+title: "Analysis CLL Proteomics - Time to next treatment"
+author: "Sophie Rabe"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r load packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(Matrix)
+library(Hmisc)
+library(ggpubr)
+library(DESeq2)
+library(tidyverse)
+library(limma)
+library(MultiAssayExperiment)
+library(gplots)
+library(survival)
+library(survminer)
+```
+
+## Load data
+```{r load data, message=FALSE}
+source("data/Figure_layouts.R")
+load("data/CLL_Proteomics_Setup.RData")
+load("data/CLL_Proteomics_ConsensusClustering.RData")
+```
+
+```{r Add CCP group}
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+```
+
+
+# Analysis
+## Time to next treatment
+### Consensus cluster groups
+```{r TTNT CCP}
+df_TTNT <- as.data.frame(colData(multiomics_MAE))
+
+# Set 'time' either to observation time (w/o next treatment) or to actual time to next treatment
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_TTNT <- df_TTNT %>% 
+  dplyr::rename(TTNT = timeDiff_TTNT_orig) %>%
+  mutate(time = ifelse(is.na(TTNT), ObsTime, TTNT), 
+         status = ifelse(is.na(TTNT), 1, 2))
+
+# Remove without any follow up or patients who were collected during treatment
+df_TTNT <- filter(df_TTNT, ObsTime!=0) %>% 
+  filter(!treatment_status=="intreatment")
+
+#KM.Plot <- function(TTNT_CCP, name, plot=TRUE, addedTitle="") {
+TTNT_CCP <-as.matrix(multiomics_MAE["PG" , ,]@colData["PG"])
+
+  
+  # Filter for patients with complete data
+  df_short <- df_TTNT %>%
+    filter(patient_ID %in% rownames(TTNT_CCP)) %>% 
+    dplyr::select(patient_ID, time, status)
+  
+  # Merge protein data with TTNT within one data frame
+  df_surv <- TTNT_CCP %>% 
+    as.data.frame() %>% 
+    rownames_to_column(var = "patient_ID") %>% 
+    right_join(df_short, by="patient_ID") %>% 
+    dplyr::select(time, status, PG) %>%
+    dplyr::rename(Factor = PG) %>%
+    mutate(BinFactor = Factor)
+  
+  formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+  # Test if TTNT_CCP is discrete or continuous
+  x1 <- TTNT_CCP %>% as.numeric() %>% unique() %>% na.omit() %>% length()
+  x2 <- TTNT_CCP %>% as.numeric() %>% na.omit() %>% length()
+  
+  df_surv$time <- df_surv$time/365
+  
+  fit <- survfit(Surv(time, status) ~ BinFactor, data = df_surv)
+  pp_sra_surv <- pp_sra
+  pp_sra_surv[[2]]$aspect.ratio <- 1
+  pp_sra_surv[[2]]$text <- element_text(size=15)
+  TTNT_CCP_plot <- ggsurvplot(fit, data = df_surv, 
+                 xlab = "Time in years",
+                 palette = colors_CCP ,
+                 legend.labs = gsub("BinFactor=", "", names(fit$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 xlim=c(0,7),
+                 ylab="Treatment free survival"
+                 ) 
+
+TTNT_CCP_plot + ggtitle("PG groups and time to next treatment") 
+```
+
+# Save important plots
+```{r save image}
+save(TTNT_CCP_plot,
+     file = "RData_plots/CLL_Proteomics_CCP_TTNT_Plots.RData")
+```
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```
