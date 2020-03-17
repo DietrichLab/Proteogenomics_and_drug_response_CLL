@@ -270,14 +270,6 @@ drug_nrs <- drs_sel %>%
 drug_nrs
 ```
 
-### Number of proteins per patient
-```{r Number of proteins}
-(!is.na(multiomics_MAE@ExperimentList$proteomics))  %>% 
-  colSums() %>% 
-  enframe(name = "Patients", value = "Nr. of proteins") %>%
-  ggplot(aes(Patients, `Nr. of proteins`)) + geom_col() + pp_sra + theme(axis.text.x = element_blank()) 
-```
-
 # Save the workspace for further scripts and important plots
 ```{r save image}
 save(all_drugs,
