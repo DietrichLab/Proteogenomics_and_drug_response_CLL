@@ -55,6 +55,19 @@ splice_genes <- KEGG %>% filter(pathway == "KEGG_SPLICEOSOME") %>% dplyr::select
 BCR_genes <- KEGG %>% filter(pathway == "KEGG_B_CELL_RECEPTOR_SIGNALING_PATHWAY") %>% dplyr::select(genes) %>% unlist() %>% strsplit2("\t") %>% .[,-1]
 ```
 
+## Functions
+### Rename deletions and gains functions
+```{r}
+change_chr_abber_brackets <- function(levels_alt){
+levels_alt %>% 
+  str_replace(., "del", "del(") %>% str_replace(., "gain", "gain(") %>%
+  str_replace(., "q", ")(q") %>% str_replace(., "p", ")(p") %>% 
+  str_replace(., "\\)\\(prim", "prim") %>% 
+  str_replace(., "11\\)\\(q", "11)(q22.3)") %>% 
+  str_replace(., "p13", "p13)") %>% str_replace(., "q14", "q14)") %>%
+  str_replace(., "q24", "q24)")
+}
+```
 
 ## Format data
 ### Proteomics
@@ -107,8 +120,12 @@ proteomics_tbl_meta_biomart_health <- wideFormat(multiomics_MAE[,,"health_record
 proteomics_tbl_meta_biomart_health <- mutate_if(proteomics_tbl_meta_biomart_health, is.numeric, as.logical)
 
 proteomics_tbl_meta_biomart <- left_join(
-  left_join((longFormat(multiomics_MAE[,,"proteomics"], colDataCols = c("trisomy12", "IGHV") ) %>% as_tibble() %>%
-                                            mutate(IGHV= if_else(IGHV %in% c("M", "U"), IGHV, "NA") ) ), 
+  left_join((
+    longFormat(multiomics_MAE[,,"proteomics"], colDataCols = c("trisomy12", "IGHV_mutated") ) %>% 
+               as_tibble() %>%
+               #mutate(IGHV= if_else(IGHV %in% c("M", "U"), IGHV, "NA") )
+               mutate(IGHV=IGHV_mutated)
+             ), 
                                          metadata(multiomics_MAE)$gene_symbol_mapping[c(2,3,5:7)], 
                                          by=c("rowname"="hgnc_symbol")),
   proteomics_tbl_meta_biomart_chrab, by=c("primary"))
@@ -195,10 +212,11 @@ order_oncoplot <- longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>%
   group_by(rowname) %>%
   summarise(total=sum(value, na.rm = TRUE)) %>%
   arrange(total ) %>%
-  .$rowname
+  .$rowname %>% change_chr_abber_brackets
 
 tmp <- wideFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>% as_tibble() 
-colnames(tmp) <- colnames(tmp) %>% gsub("SNPs_|chrom_abber_", "",.)
+colnames(tmp) <- colnames(tmp) %>% gsub("SNPs_|chrom_abber_", "",.) %>% 
+  change_chr_abber_brackets
 for(l in 1:length(order_oncoplot)){
   tmp <- tmp %>% arrange_( as.name(order_oncoplot[l] ) )
 }
@@ -207,18 +225,24 @@ onco_center <-
   longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>% 
   as_tibble() %>% 
   mutate(alteration= if_else(value==1, assay, as.character(value))) %>%
+  mutate(rowname = change_chr_abber_brackets(rowname) ) %>%
   ggplot(aes(primary, rowname, fill=alteration)) + 
   geom_tile(color="black") + 
   scale_fill_manual(values=c("white", "orange1", "#ca0020", "grey"), labels=c("wt", "CNV", "SNV", "NA" ), na.translate=FALSE) + 
   scale_y_discrete(limits=order_oncoplot) +
   scale_x_discrete(limits=rev(tmp$primary)) +
+  xlab("Patients") +
   theme(panel.background = element_rect(fill= "darkgrey"), panel.grid = element_blank(), 
-        axis.text.x = element_blank(), axis.title = element_blank(),
-        axis.ticks.x = element_blank(), legend.position = "bottom") +
+        axis.text.x = element_blank(), 
+        #axis.title = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.x = element_blank(), 
+        legend.position = "bottom", legend.key.size = unit(10, "pt")) +
   guides(fill=guide_legend(title = NULL ))
 
 onco_right <-longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>% 
   as_tibble() %>%
+  mutate(rowname = change_chr_abber_brackets(rowname) ) %>%
   ggplot(aes(rowname, value)) + geom_col(aes(fill=assay)) +
   scale_x_discrete(limits=order_oncoplot) +
   coord_flip()+
@@ -229,6 +253,7 @@ onco_right <-longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>%
 onco_right_perc <- longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>% as_tibble()  %>% 
   group_by(rowname) %>% 
   dplyr::summarise(perc=round(sum(value, na.rm = TRUE)/ sum(!is.na(value)) , 2) ) %>% 
+  mutate(rowname = change_chr_abber_brackets(rowname) ) %>%
   ggplot(aes(rowname, 1, label=paste0(perc*100, "%") )) + 
   geom_text() + coord_flip() + theme_void() + 
   scale_x_discrete(limits=order_oncoplot)
@@ -237,12 +262,14 @@ onco_right_total <-
   longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>% as_tibble()  %>% 
   group_by(rowname) %>% 
   dplyr::summarise(total=sum(value, na.rm = TRUE )) %>% 
+  mutate(rowname = change_chr_abber_brackets(rowname) ) %>%
   ggplot(aes(rowname, 1, label=total)) + 
   geom_text() + coord_flip() + theme_void() + 
   scale_x_discrete(limits=order_oncoplot)
 
 onco_top <-longFormat(multiomics_MAE[,,c("SNPs","chrom_abber")]) %>% 
   as_tibble() %>%
+  mutate(rowname = change_chr_abber_brackets(rowname) ) %>%
   ggplot(aes(primary, value)) + geom_col(aes(fill=assay)) +
   scale_x_discrete(limits=rev(tmp$primary)) +
   scale_fill_manual(values=c("orange1", "#ca0020")) +

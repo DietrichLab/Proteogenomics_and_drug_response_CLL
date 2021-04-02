@@ -51,8 +51,17 @@ load("data/GOterm_Spliceosome.RData")
 ```
 
 ```{r Add CCP group}
-colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
-colData(multiomics_MAE)$CCP6_RNA <- as.factor(CCP_group6_RNA[rownames(colData(multiomics_MAE))])
+new_colData <- left_join(colData(multiomics_MAE) %>% as_tibble(),
+  enframe(CCP_group5, value = "PG", name = "patient_ID") ) 
+
+new_colData <- left_join(new_colData,
+  enframe(CCP_group6_RNA, value = "CCP6_RNA", name = "patient_ID") ) %>%
+  as.data.frame() %>%
+  mutate(rn = patient_ID) %>%
+  column_to_rownames(., var = "rn")
+
+colData(multiomics_MAE)$PG <- as.factor(new_colData$PG)
+colData(multiomics_MAE)$CCP6_RNA <- as.factor(new_colData$CCP6_RNA)
 ```
 
 # Analysis
@@ -70,7 +79,7 @@ rtsne_out_df <- left_join(rtsne_out_df,
                           by=c("pat_ID"="primary") )
 
 rtsne_out_df <- mutate_at(rtsne_out_df, colnames(rtsne_out_df %>% dplyr::select(SNPs_ATM:health_record_bin_treated)), as.logical)
-rtsne_out_df <- rtsne_out_df %>% replace(is.na(.), "unknown")
+#rtsne_out_df <- rtsne_out_df %>% replace(is.na(.), "unknown")
 
 message("t-SNE colored by consensus cluster groups")
 tsne_CCP_P_plot <-  ggplot(rtsne_out_df, aes(V1, V2)) +
@@ -87,7 +96,7 @@ tsne_IGHVtris_plot <- ggplot(rtsne_out_df %>% filter(health_record_bin_IGHV_muta
   pp_sra_noguides 
 tsne_IGHVtris_plot +  theme(aspect.ratio=1, plot.title = element_text(size = 30)) #+
 
-sapply(colnames(rtsne_out_df)[c(4,5,8:29)], function(var){
+sapply(colnames(rtsne_out_df)[c(4,5,8:26)], function(var){
   print(ggplot(rtsne_out_df, aes(V1, V2)) +
           geom_point(aes_string(color=var), size=3) +
     scale_color_manual(values = c( "#0571b0", "#ca0020", "grey"))  + 
@@ -140,7 +149,7 @@ left_join(BCR_genes_mean,
   theme(legend.position = "bottom")
 
 BCR_CCP_P_plot <- left_join(BCR_genes_mean, 
-          enframe(multiomics_MAE$PG, value = "PG"), 
+          colData(multiomics_MAE) %>% as_tibble() %>% select(name=patient_ID, PG ),
           by=c("name")) %>%
   filter(!is.na(PG)) %>%
   ggplot(aes( PG, value ))+
@@ -149,8 +158,8 @@ BCR_CCP_P_plot <- left_join(BCR_genes_mean,
   scale_fill_manual(values=colors_CCP) +
   pp_sra +
   ylab("Mean abundance of BCR proteins")+
-  stat_compare_means(label = "p.signif", method = "t.test",
-                     ref.group = ".all.", label.y = 0.2, hide.ns = TRUE) +
+  #stat_compare_means(label = "p.signif", method = "t.test",
+  #                   ref.group = ".all.", label.y = 0.2, hide.ns = TRUE) +
   guides(fill=guide_legend(title="PG"))
 BCR_CCP_P_plot + theme(aspect.ratio=1) + 
   stat_compare_means(method = "anova", label.y = 0.22, hjust=0)
@@ -162,15 +171,16 @@ BCR_CCP_P_plot + theme(aspect.ratio=1) +
 sel_BCR <- c("ZAP70",  "IGHM", "CD79A", "CD79B",  "SYK", "PLCG2",  "BTK",  "PTPN6", 
              "MAPK1",  "PIK3CD", "AKT1", "IKBKB")
 
-tmp_BCR <- wideFormat(multiomics_MAE[sel_BCR, ,"proteomics"], colDataCols = c("PG", "IGHV" )) %>% 
+tmp_BCR <- wideFormat(multiomics_MAE[sel_BCR, ,"proteomics"], colDataCols = c("PG", "IGHV_mutated" )) %>% 
   as_tibble()
-tmp_BCR_mx <- tmp_BCR %>% dplyr::select(-primary, -PG, -IGHV) %>% as.matrix()
+tmp_BCR_mx <- tmp_BCR %>% dplyr::select(-primary, -PG, -IGHV_mutated) %>% as.matrix()
 rownames(tmp_BCR_mx) <- tmp_BCR$primary
 colnames(tmp_BCR_mx) <- gsub("proteomics_", "", colnames(tmp_BCR_mx))
-tmp_BCR_anno <- tmp_BCR[, c("PG", "IGHV")] %>% as.data.frame()
+tmp_BCR_anno <- tmp_BCR[, c("PG", "IGHV_mutated")] %>% as.data.frame()
 rownames(tmp_BCR_anno) <- tmp_BCR$primary
-tmp_BCR_anno$IGHV[tmp_BCR_anno$IGHV=="U"] <- "U-CLL"
-tmp_BCR_anno$IGHV[tmp_BCR_anno$IGHV=="M"] <- "M-CLL"
+tmp_BCR_anno$IGHV[tmp_BCR_anno$IGHV_mutated==0] <- "U-CLL"
+tmp_BCR_anno$IGHV[tmp_BCR_anno$IGHV_mutated==1] <- "M-CLL"
+tmp_BCR_anno <- tmp_BCR_anno %>% select(-IGHV_mutated)
 
 ann_colors = list(
   PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= colors_CCP[5], "6"= colors_CCP[6] ),
@@ -191,17 +201,17 @@ PG_BCR_proteins_pheatmap <- pheatmap(t(tmp_BCR_mx[pat_order_hclust, ]),
          annotation_col = tmp_BCR_anno, annotation_colors = ann_colors, scale = "row", cluster_cols = FALSE, 
          color = inferno(length(breaks)), border_color = NA, 
          gaps_col = (which(!tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1],  
-         breaks = breaks , cutree_rows = 4, show_colnames = F, treeheight_row = 0, fontsize_row = 5)
+         breaks = breaks , cutree_rows = 4, show_colnames = F, treeheight_row = 0, fontsize_row = 8)
 ```
 
 #### All KEGG BCR signaling proteins
 ```{r tsne BCR genes heatmap, fig.height=5}
-tmp_BCR <- wideFormat(multiomics_MAE[BCR_genes, ,"proteomics"], colDataCols = c("PG", "IGHV" )) %>% 
+tmp_BCR <- wideFormat(multiomics_MAE[BCR_genes, ,"proteomics"], colDataCols = c("PG", "IGHV_mutated" )) %>% 
   as_tibble()
-tmp_BCR_mx <- tmp_BCR %>% dplyr::select(-primary, -PG, -IGHV) %>% as.matrix()
+tmp_BCR_mx <- tmp_BCR %>% dplyr::select(-primary, -PG, -IGHV_mutated) %>% as.matrix()
 rownames(tmp_BCR_mx) <- tmp_BCR$primary
 colnames(tmp_BCR_mx) <- gsub("proteomics_", "", colnames(tmp_BCR_mx))
-tmp_BCR_anno <- tmp_BCR[, c("PG", "IGHV")] %>% as.data.frame()
+tmp_BCR_anno <- tmp_BCR[, c("PG", "IGHV_mutated")] %>% as.data.frame()
 tmp_BCR_anno$PG <- factor(tmp_BCR_anno$PG,levels = c(5,1:4,6)) #
 rownames(tmp_BCR_anno) <- tmp_BCR$primary
 
@@ -209,9 +219,9 @@ ann_colors = list(
   PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= colors_CCP[5], "6"= colors_CCP[6] ))
 
 message("Heatmap of abundance BCR signaling proteins ordered according to PG")
-pheatmap(tmp_BCR_mx[(tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$rowname), ], 
+pheatmap(tmp_BCR_mx[(tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV_mutated) %>% .$rowname), ], 
          annotation_row = tmp_BCR_anno, annotation_colors = ann_colors, scale = "column", cluster_rows = FALSE, color = inferno(10), border_color = NA, 
-         gaps_row = (which(!tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1])
+         gaps_row = (which(!tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV_mutated) %>% .$PG %>% duplicated())-1)[-1])
 ```
 
 ## Spliceosome
@@ -220,7 +230,7 @@ pheatmap(tmp_BCR_mx[(tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV)
 splice_genes_mean <- assay(multiomics_MAE[splice_genes, ,"proteomics"]) %>% colMeans(na.rm = TRUE) %>% enframe()
 
 splicing_CCP_P_plot <- left_join(splice_genes_mean, 
-          enframe(multiomics_MAE$PG, value = "PG"), 
+          colData(multiomics_MAE) %>% as_tibble() %>% select(name=patient_ID, PG ), 
           by=c("name")) %>%
   filter(!is.na(PG)) %>%
   ggplot(aes( PG, value ))+
@@ -228,25 +238,25 @@ splicing_CCP_P_plot <- left_join(splice_genes_mean,
   ggtitle("Spliceosome protein abundance") + 
   pp_sra +
   ylab("Mean abundance of spliceosome proteins")+
-  stat_compare_means(label = "p.signif", method = "t.test",
-                     ref.group = ".all.", label.y = 0.2, hide.ns = TRUE)+
+  #stat_compare_means(label = "p.signif", method = "t.test",
+  #                   ref.group = ".all.", label.y = 0.2, hide.ns = TRUE)+
   guides(fill=guide_legend(title="PG")) +
   scale_fill_manual(values = colors_CCP)
 splicing_CCP_P_plot +   theme(aspect.ratio=1) + 
     stat_compare_means(method = "anova", label.y = 0.22, hjust=0)
 
-tmp_splice <- wideFormat(multiomics_MAE[splice_genes, ,"proteomics"], colDataCols = c("PG", "IGHV")) %>% as_tibble()
-tmp_splice_mx <- tmp_splice %>% dplyr::select(-primary, -PG, -IGHV) %>% as.matrix()
+tmp_splice <- wideFormat(multiomics_MAE[splice_genes, ,"proteomics"], colDataCols = c("PG", "IGHV_mutated")) %>% as_tibble()
+tmp_splice_mx <- tmp_splice %>% dplyr::select(-primary, -PG, -IGHV_mutated) %>% as.matrix()
 rownames(tmp_splice_mx) <- tmp_splice$primary
 colnames(tmp_splice_mx) <- gsub("proteomics_", "", colnames(tmp_splice_mx))
-tmp_splice_anno <- tmp_splice %>% dplyr::select(PG, IGHV) %>% as.data.frame()
+tmp_splice_anno <- tmp_splice %>% dplyr::select(PG, IGHV_mutated) %>% as.data.frame()
 rownames(tmp_splice_anno) <- tmp_splice$primary
 tmp_splice_anno$PG <- factor(tmp_splice_anno$PG,levels = c(5,1:4,6))
 
 message("Heatmap of abundance spliceosome proteins ordered according to PG")
-pheatmap(tmp_splice_mx[(tmp_splice_anno %>% rownames_to_column() %>% arrange( PG, IGHV) %>% .$rowname), ], 
+pheatmap(tmp_splice_mx[(tmp_splice_anno %>% rownames_to_column() %>% arrange( PG, IGHV_mutated) %>% .$rowname), ], 
          annotation_row = tmp_splice_anno, annotation_colors = ann_colors, scale = "column", cluster_rows = FALSE, color = inferno(10), border_color = NA,
-         gaps_row = (which(!tmp_splice_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1])
+         gaps_row = (which(!tmp_splice_anno %>% rownames_to_column() %>% arrange(PG, IGHV_mutated) %>% .$PG %>% duplicated())-1)[-1])
 ```
 
 
@@ -256,23 +266,27 @@ some_spliceprots <- c("SF3B1", "SNRPA", "PRPF6", "PRPF3", "SF3A1", "SNRPD2",  "S
                       "CRNKL1", "PUF60", "PRPF8",
                       "SNRPB2")
 
-tmp_Splice_GO <- wideFormat(multiomics_MAE[some_spliceprots, ,"proteomics"], colDataCols = c("PG", "IGHV" )) %>% 
+tmp_Splice_GO <- wideFormat(multiomics_MAE[some_spliceprots, ,"proteomics"], colDataCols = c("PG", "IGHV_mutated" )) %>% 
   as_tibble()
-tmp_Splice_GO_mx <- tmp_Splice_GO %>% dplyr::select(-primary, -PG, -IGHV) %>% as.matrix()
+tmp_Splice_GO_mx <- tmp_Splice_GO %>% dplyr::select(-primary, -PG, -IGHV_mutated) %>% as.matrix()
 rownames(tmp_Splice_GO_mx) <- tmp_Splice_GO$primary
 colnames(tmp_Splice_GO_mx) <- gsub("proteomics_", "", colnames(tmp_Splice_GO_mx))
-tmp_Splice_GO_anno <- tmp_Splice_GO[, c("PG", "IGHV")] %>% as.data.frame()
+tmp_Splice_GO_anno <- tmp_Splice_GO[, c("PG", "IGHV_mutated")] %>% as.data.frame()
 rownames(tmp_Splice_GO_anno) <- tmp_Splice_GO$primary
 tmp_Splice_GO_anno$PG <- factor(tmp_Splice_GO_anno$PG,levels = c(5,1:4,6))
 SF3B1mut <- wideFormat(multiomics_MAE["SF3B1",,"SNPs"])$SNPs_SF3B1
 names(SF3B1mut) <- wideFormat(multiomics_MAE["SF3B1",,"SNPs"])$primary
-tmp_Splice_GO_anno$SF3B1 <- as.factor(SF3B1mut[rownames(tmp_Splice_GO_anno)])
-tmp_Splice_GO_anno$IGHV[tmp_Splice_GO_anno$IGHV=="U"] <- "U-CLL"
-tmp_Splice_GO_anno$IGHV[tmp_Splice_GO_anno$IGHV=="M"] <- "M-CLL"
+tmp_Splice_GO_anno$SF3B1 <- SF3B1mut[rownames(tmp_Splice_GO_anno)]
+tmp_Splice_GO_anno$SF3B1[tmp_Splice_GO_anno$SF3B1 == 1] <- "mut"
+tmp_Splice_GO_anno$SF3B1[tmp_Splice_GO_anno$SF3B1==0] <- "wt"
+tmp_Splice_GO_anno$SF3B1 <- as.factor(tmp_Splice_GO_anno$SF3B1)
+tmp_Splice_GO_anno$IGHV[tmp_Splice_GO_anno$IGHV_mutated==0] <- "U-CLL"
+tmp_Splice_GO_anno$IGHV[tmp_Splice_GO_anno$IGHV_mutated==1] <- "M-CLL"
+tmp_Splice_GO_anno <- tmp_Splice_GO_anno %>% select(-IGHV_mutated)
 
 ann_colors = list(
   PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= colors_CCP[5], "6"= colors_CCP[6] ),
-  SF3B1=c("1"="darkblue", "0"="gray80"),
+  SF3B1=c("mut"="darkblue", "wt"="gray80"),
   IGHV=c("U-CLL"= "#0571b0", "M-CLL"= "#ca0020"))
 
 pat_order_hclust_splice <- sapply(c(5,1:4,6), function(P){
@@ -284,7 +298,7 @@ PG_splice_proteins_pheatmap <- pheatmap(t(tmp_Splice_GO_mx[pat_order_hclust_spli
          annotation_col = tmp_Splice_GO_anno, annotation_colors = ann_colors, scale = "row", cluster_cols = FALSE, 
          color =  inferno(length(breaks)), border_color = NA, 
          gaps_col = (which(!tmp_Splice_GO_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1],
-         breaks = breaks , show_colnames = F , treeheight_row = 0, fontsize_row = 5)
+         breaks = breaks , show_colnames = F , treeheight_row = 0, fontsize_row = 8)
 ```
 
 
@@ -314,7 +328,7 @@ left_join(splice_genes_mean,
 BCAA_genes_mean <- assay(multiomics_MAE[BCAA_genes, ,"proteomics"]) %>% colMeans(na.rm = TRUE) %>% enframe()
 
 BCAA_CCP_P_plot <- left_join(BCAA_genes_mean, 
-          enframe(multiomics_MAE$PG, value = "PG"), 
+          colData(multiomics_MAE) %>% as_tibble() %>% select(name=patient_ID, PG ), 
           by=c("name")) %>%
   filter(!is.na(PG)) %>%
   ggplot(aes( PG, value ))+
@@ -322,8 +336,8 @@ BCAA_CCP_P_plot <- left_join(BCAA_genes_mean,
   ggtitle("BCAA protein abundance") + 
   pp_sra +
   ylab("Mean abundance of BCAA proteins")+
-  stat_compare_means(label = "p.signif", method = "t.test",
-                     ref.group = ".all.", label.y = 0.55, hide.ns = TRUE)+
+  #stat_compare_means(label = "p.signif", method = "t.test",
+  #                   ref.group = ".all.", label.y = 0.55, hide.ns = TRUE)+
   guides(fill=guide_legend(title="PG")) +
   scale_fill_manual(values = colors_CCP)
 BCAA_CCP_P_plot +   theme(aspect.ratio=1) + 
@@ -334,16 +348,17 @@ BCAA_CCP_P_plot +   theme(aspect.ratio=1) +
 ```{r}
 some_BCAA <- c("ACAT1", "PCCA", "PCCB", "HADH", "HADHB", "HADHA", "HIBADH", "MCCC1", "MCCC2", "MLYCD")
 
-tmp_BCAA <- wideFormat(multiomics_MAE[some_BCAA, ,"proteomics"], colDataCols = c("PG", "IGHV" )) %>% 
+tmp_BCAA <- wideFormat(multiomics_MAE[some_BCAA, ,"proteomics"], colDataCols = c("PG", "IGHV_mutated" )) %>% 
   as_tibble()
-tmp_BCAA_mx <- tmp_BCAA %>% dplyr::select(-primary, -PG, -IGHV) %>% as.matrix()
+tmp_BCAA_mx <- tmp_BCAA %>% dplyr::select(-primary, -PG, -IGHV_mutated) %>% as.matrix()
 rownames(tmp_BCAA_mx) <- tmp_BCAA$primary
 colnames(tmp_BCAA_mx) <- gsub("proteomics_", "", colnames(tmp_BCAA_mx))
-tmp_BCAA_anno <- tmp_BCAA[, c("PG", "IGHV")] %>% as.data.frame()
+tmp_BCAA_anno <- tmp_BCAA[, c("PG", "IGHV_mutated")] %>% as.data.frame()
 rownames(tmp_BCAA_anno) <- tmp_BCAA$primary
 tmp_BCAA_anno$PG <- factor(tmp_BCAA_anno$PG,levels = c(5,1:4,6))
-tmp_BCAA_anno$IGHV[tmp_BCAA_anno$IGHV=="U"] <- "U-CLL"
-tmp_BCAA_anno$IGHV[tmp_BCAA_anno$IGHV=="M"] <- "M-CLL"
+tmp_BCAA_anno$IGHV[tmp_BCAA_anno$IGHV_mutated==0] <- "U-CLL"
+tmp_BCAA_anno$IGHV[tmp_BCAA_anno$IGHV_mutated==1] <- "M-CLL"
+tmp_BCAA_anno <- tmp_BCAA_anno %>% select(-IGHV_mutated)
 
 breaks= seq(min(tmp_BCAA_mx), max(tmp_BCAA_mx), 0.1)^2
 breaks= sort(c(-breaks, breaks))
@@ -371,7 +386,7 @@ PG_BCAA_proteins_pheatmap <- pheatmap(t(tmp_BCAA_mx[pat_order_hclust_splice, ]),
 proteasome_genes_mean <- assay(multiomics_MAE[proteasome_genes, ,"proteomics"]) %>% colMeans(na.rm = TRUE) %>% enframe()
 
 proteasome_CCP_P_plot <- left_join(proteasome_genes_mean, 
-          enframe(multiomics_MAE$PG, value = "PG"), 
+          colData(multiomics_MAE) %>% as_tibble() %>% select(name=patient_ID, PG ), 
           by=c("name")) %>%
   filter(!is.na(PG)) %>%
   ggplot(aes( PG, value ))+
@@ -379,8 +394,8 @@ proteasome_CCP_P_plot <- left_join(proteasome_genes_mean,
   ggtitle("Proteasome protein abundance") + 
   pp_sra +
   ylab("Mean abundance of proteasomal proteins")+
-  stat_compare_means(label = "p.signif", method = "t.test",
-                     ref.group = ".all.", label.y = 0.3, hide.ns = TRUE)+
+  #stat_compare_means(label = "p.signif", method = "t.test",
+  #                   ref.group = ".all.", label.y = 0.3, hide.ns = TRUE)+
   guides(fill=guide_legend(title="PG")) +
   scale_fill_manual(values = colors_CCP)
 proteasome_CCP_P_plot +   theme(aspect.ratio=1) + 
@@ -391,16 +406,17 @@ proteasome_CCP_P_plot +   theme(aspect.ratio=1) +
 ```{r}
 some_proteasome <- proteasome_genes
 
-tmp_proteasome <- wideFormat(multiomics_MAE[some_proteasome, ,"proteomics"], colDataCols = c("PG", "IGHV" )) %>% 
+tmp_proteasome <- wideFormat(multiomics_MAE[some_proteasome, ,"proteomics"], colDataCols = c("PG", "IGHV_mutated" )) %>% 
   as_tibble()
-tmp_proteasome_mx <- tmp_proteasome %>% dplyr::select(-primary, -PG, -IGHV) %>% as.matrix()
+tmp_proteasome_mx <- tmp_proteasome %>% dplyr::select(-primary, -PG, -IGHV_mutated) %>% as.matrix()
 rownames(tmp_proteasome_mx) <- tmp_proteasome$primary
 colnames(tmp_proteasome_mx) <- gsub("proteomics_", "", colnames(tmp_proteasome_mx))
-tmp_proteasome_anno <- tmp_proteasome[, c("PG", "IGHV")] %>% as.data.frame()
+tmp_proteasome_anno <- tmp_proteasome[, c("PG", "IGHV_mutated")] %>% as.data.frame()
 rownames(tmp_proteasome_anno) <- tmp_proteasome$primary
 tmp_proteasome_anno$PG <- factor(tmp_proteasome_anno$PG,levels = c(5,1:4,6))
-tmp_proteasome_anno$IGHV[tmp_proteasome_anno$IGHV=="U"] <- "U-CLL"
-tmp_proteasome_anno$IGHV[tmp_proteasome_anno$IGHV=="M"] <- "M-CLL"
+tmp_proteasome_anno$IGHV[tmp_proteasome_anno$IGHV_mutated==0] <- "U-CLL"
+tmp_proteasome_anno$IGHV[tmp_proteasome_anno$IGHV_mutated==1] <- "M-CLL"
+tmp_proteasome_anno <- tmp_proteasome_anno %>% select(-IGHV_mutated)
 
 breaks= seq(min(tmp_proteasome_mx), max(tmp_proteasome_mx), 0.1)^2
 breaks= sort(c(-breaks, breaks))
@@ -435,16 +451,16 @@ prot_pca_x <- left_join(prot_pca_x,
                                    colDataCols = c("gender", "treatment_status", "PG")) %>% as_tibble() , 
                         by=c("pat_ID"="primary") )
 
-prot_pca_x <- prot_pca_x %>% replace(is.na(.), "unknown")
+#prot_pca_x <- prot_pca_x %>% replace(is.na(.), "unknown")
 
 ggplot(prot_pca_x, aes(PC1, PC2)) +
-  geom_point(aes(color=health_record_bin_IGHV_mutated, shape=chrom_abber_trisomy12)) + pp_sra +
+  geom_point(aes(color=as.factor(health_record_bin_IGHV_mutated), shape=as.factor(chrom_abber_trisomy12)))  + pp_sra +
   scale_shape_manual(values = c( 16,  1, 4)) + 
   scale_color_manual(values = c( "#0571b0","#ca0020", "grey")) + theme(aspect.ratio = 1)
-ggplot(prot_pca_x, aes(PC1, PC3)) +geom_point(aes(color=health_record_bin_IGHV_mutated, shape=chrom_abber_trisomy12)) +
+ggplot(prot_pca_x, aes(PC1, PC3)) +geom_point(aes(color=as.factor(health_record_bin_IGHV_mutated), shape=as.factor(chrom_abber_trisomy12)) ) +
   scale_shape_manual(values = c( 16,  1, 4)) + 
   scale_color_manual(values = c( "#0571b0","#ca0020", "grey"))+ pp_sra+ theme(aspect.ratio = 1)
-ggplot(prot_pca_x, aes(PC2, PC3)) +geom_point(aes(color=health_record_bin_IGHV_mutated, shape=chrom_abber_trisomy12)) +  
+ggplot(prot_pca_x, aes(PC2, PC3)) +geom_point(aes(color=as.factor(health_record_bin_IGHV_mutated), shape=as.factor(chrom_abber_trisomy12)) ) +  
   scale_shape_manual(values = c( 16,  1, 4)) + 
   scale_color_manual(values = c( "#0571b0", "#ca0020", "grey")) + pp_sra+ theme(aspect.ratio = 1)
 
@@ -503,7 +519,7 @@ rtsne_out_RNA_df <- left_join(rtsne_out_RNA_df,
 
 rtsne_out_RNA_df <- mutate_at(rtsne_out_RNA_df, colnames(rtsne_out_RNA_df %>% dplyr::select(SNPs_ATM:health_record_bin_treated)), as.logical)
 
-rtsne_out_RNA_df <- rtsne_out_RNA_df %>% replace(is.na(.), "unknown")
+#rtsne_out_RNA_df <- rtsne_out_RNA_df %>% replace(is.na(.), "unknown")
 
 tsne_CCP_R_plot <- ggplot(rtsne_out_RNA_df, aes(V1, V2)) +
   geom_point(aes(fill=PG), color="grey", shape=21) +
@@ -519,7 +535,7 @@ tsne_CCPRNA_R_plot <- ggplot(rtsne_out_RNA_df, aes(V1, V2)) +
   guides(color=guide_legend(title="CC_RNA"))
 tsne_CCPRNA_R_plot+  theme(aspect.ratio=1, plot.title = element_text(size = 30))
 
-sapply(colnames(rtsne_out_RNA_df)[c(4,5,9:30)], function(var){
+sapply(colnames(rtsne_out_RNA_df)[c(4,5,9:27)], function(var){
   print(ggplot(rtsne_out_RNA_df, aes(V1, V2)) +
           geom_point(aes_string(color=var), size=3) +
     scale_color_manual(values = c("#92c5de", "#f4a582",  "grey"))  + 

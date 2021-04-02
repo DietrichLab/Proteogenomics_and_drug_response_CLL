@@ -127,14 +127,13 @@ plot_chromosome_theme <- list(
     coord_cartesian(ylim=c(-0.7,0.7)),
     facet_wrap(~paste("chromosome",chromosome_name), scales = "free_x"),
     ylab("log2 norm. protein abundance"),
-    xlab("Protein location on chromosome"),
-    scale_color_manual(values=c("#0571b0", "#ca0020", "grey"))
+    xlab("Location gene for protein on chromosome [bp]")
 )
 ```
 
 ```{r analysis proteomics position chromosome, warning=FALSE, eval=TRUE, include=TRUE}
 Chr12_P_plot <- proteomics_tbl_meta_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_trisomy12),
           chromosome_name %in% c("12")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
@@ -142,31 +141,37 @@ Chr12_P_plot <- proteomics_tbl_meta_biomart %>%
   plot_chromosome_theme +
   pp_sra +
   ggtitle("trisomy12") +
-  geom_rect(xmin = 0, ymin=-0.68, ymax=0.68, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 0, ymin=-0.68, ymax=0.68, xmax=133275309, color="gray40", size=1.5,  fill=NA) +
+  scale_color_manual(values=c("#0571b0", "#ca0020"), name = "", 
+                       labels = c("wt", "trisomy 12" ))
 Chr12_P_plot +  theme(aspect.ratio=0.4, legend.position = 'none') 
 
 Chr11_P_plot <- proteomics_tbl_meta_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_del11q),
           chromosome_name %in% c("11")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
   stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del11q), span=0.5, method = "loess") +
   plot_chromosome_theme +
-  pp_sra_noguides +
+  pp_sra +
   ggtitle("del11q")+
-  geom_rect(xmin = 97400000, ymin=-0.68, ymax=0.68, xmax=110600000, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 97400000, ymin=-0.68, ymax=0.68, xmax=110600000, color="gray40", size=1.5,  fill=NA) +
+  scale_color_manual(values=c("#0571b0", "#ca0020"), name = "", 
+                       labels = c("wt","del11q"))
 Chr11_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 
 Chr13_P_plot <- proteomics_tbl_meta_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_del13q14),
           chromosome_name %in% c("13")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
   stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del13q14), span=0.5, method = "loess") +
   plot_chromosome_theme +
-  pp_sra_noguides +
+  pp_sra +
   ggtitle("del13q")+
-  geom_rect(xmin = 47000000,ymin=-0.68, ymax=0.68, xmax=51000000, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 47000000,ymin=-0.68, ymax=0.68, xmax=51000000, color="gray40", size=1.5,  fill=NA) +
+  scale_color_manual(values=c("#0571b0", "#ca0020"), name = "", 
+                       labels = c("wt","del13q"))
 Chr13_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 
 message("In the region in which the deletion occurs (47Mb-51Mb, 2011 Ouillette et al.) the data are probably very noisy as the number of proteins we detected in the affected region is small:")
@@ -175,7 +180,7 @@ proteomics_tbl_meta_biomart %>%
           chromosome_name %in% c("13"), start_position>47000000, start_position< 51000000) %>% dplyr::select(rowname) %>% unique() %>% nrow()
 
 Chr17_P_plot <- proteomics_tbl_meta_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_del17p13 ),
           chromosome_name %in% c("17")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
@@ -183,11 +188,13 @@ Chr17_P_plot <- proteomics_tbl_meta_biomart %>%
   plot_chromosome_theme +
   pp_sra +
   ggtitle("del17p")+
-  geom_rect(xmin = 0, ymin=-0.68, ymax=0.68, xmax=10800000, color="gray40", size=1.5,  fill=NA)
-Chr17_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
+  geom_rect(xmin = 0, ymin=-0.68, ymax=0.68, xmax=10800000, color="gray40", size=1.5,  fill=NA) +
+  scale_color_manual(values=c("#0571b0", "#ca0020"), name = "", 
+                       labels = c("wt","del17p"))
+Chr17_P_plot + theme(aspect.ratio=0.4, legend.position = 'none')  
 
 Chr8_P_plot <- proteomics_tbl_meta_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_gain8q24 ),
           chromosome_name %in% c("8")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
@@ -195,19 +202,21 @@ Chr8_P_plot <- proteomics_tbl_meta_biomart %>%
   plot_chromosome_theme +
   pp_sra +
   ggtitle("gain8q24")+
-  geom_rect(xmin = 117700001, ymin=-0.68, ymax=0.68, xmax=146364022, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 117700001, ymin=-0.68, ymax=0.68, xmax=146364022, color="gray40", size=1.5,  fill=NA) +
+  scale_color_manual(values=c("#0571b0", "#ca0020"), name = "", 
+                       labels = c("wt","gain8q"))
 Chr8_P_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 ```
 
 ## Chromosome position and RNA
+### Creat df
 ```{r analysis RNA position chromosome tris12, fig.height=10, warning=FALSE, eval=TRUE, echo=TRUE}
 plot_chromosome_theme_RNA <- list(
-    coord_cartesian(ylim=c(0.75,1.25)),
     #coord_cartesian(ylim=c(0.95,1.1)),
+    coord_cartesian(ylim=c(0.95,1.05)),
     facet_wrap(~paste("chromosome",chromosome_name), scales = "free_x"),
     ylab("log10 norm. RNA counts"),
-    xlab("Gene location on chromosome"),
-    scale_color_manual(values=c("#92c5de", "#f4a582", "grey"))
+    xlab("Location gene on chromosome [bp]")
 )
 
 RNA_biomart<- left_join(
@@ -220,10 +229,23 @@ RNA_biomart <- left_join( left_join(RNA_biomart,
           proteomics_tbl_meta_biomart_health, by=c("primary"))
 ```
 
+### Normalise RNA to mean per gene
+```{r}
+RNA_biomart_mean <- RNA_biomart %>%
+  group_by(rowname) %>%
+  summarise( mean_value = mean(value, na.rm = TRUE) )
+
+RNA_biomart <- left_join(
+  RNA_biomart,
+  RNA_biomart_mean ) %>%
+  mutate(value = value/mean_value)
+```
+
+### Plot
 ```{r analysis RNA position chromosome, warning=FALSE, eval=TRUE, include=TRUE}
 # Trisomy 12
 Chr12_R_plot <- RNA_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_trisomy12),
           chromosome_name %in% c("12")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
@@ -231,41 +253,43 @@ Chr12_R_plot <- RNA_biomart %>%
   plot_chromosome_theme_RNA +
   pp_sra +
   ggtitle("trisomy12") +
-  coord_cartesian(ylim=c(0.95,1.1)) +
-  geom_rect(xmin = 0, ymin=0.95, ymax=1.1, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 0, ymin=0.95, ymax=1.05, xmax=133275309, color="gray40", size=1.5,  fill=NA) +    scale_color_manual(values=c("#92c5de", "#f4a582"), name = "", 
+                       labels = c("wt","trisomy 12"))
 Chr12_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 
 # del11q
 Chr11_R_plot <- RNA_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_del11q),
           chromosome_name %in% c("11")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
   stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del11q), span=0.5, method = "loess") +
   plot_chromosome_theme_RNA +
-  pp_sra_noguides +
+  pp_sra +
   ggtitle("del11q")+
-  coord_cartesian(ylim=c(0.95,1.1)) +
-  geom_rect(xmin = 97400000, ymin=0.95, ymax=1.1, xmax=110600000, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 97400000, ymin=0.95, ymax=1.05, xmax=110600000, color="gray40", size=1.5,  fill=NA) +    
+  scale_color_manual(values=c("#92c5de", "#f4a582"), name = "", 
+                       labels = c("wt","del11q"))
 Chr11_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 
 # del13q
 Chr13_R_plot <- RNA_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na( chrom_abber_del13q14),
           chromosome_name %in% c("13")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
   stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=chrom_abber_del13q14), span=0.5, method = "loess") +
   plot_chromosome_theme_RNA +
-  pp_sra_noguides +
+  pp_sra +
   ggtitle("del13q")+
-  coord_cartesian(ylim=c(0.95,1.1)) +
-  geom_rect(xmin = 47000000, ymin=0.95, ymax=1.1, xmax=51000000, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 47000000, ymin=0.95, ymax=1.05, xmax=51000000, color="gray40", size=1.5,  fill=NA) +    
+  scale_color_manual(values=c("#92c5de", "#f4a582"), name = "", 
+                       labels = c("wt","del13q"))
 Chr13_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 
 # del17p
 Chr17_R_plot <- RNA_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_del17p13),
           chromosome_name %in% c("17")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
@@ -273,12 +297,13 @@ Chr17_R_plot <- RNA_biomart %>%
   plot_chromosome_theme_RNA +
   pp_sra +
   ggtitle("del17p")+
-  coord_cartesian(ylim=c(0.95,1.1)) +
-  geom_rect(xmin = 0, ymin=0.95, ymax=1.1, xmax=10800000, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 0, ymin=0.95, ymax=1.05, xmax=10800000, color="gray40", size=1.5,  fill=NA) + 
+  scale_color_manual(values=c("#92c5de", "#f4a582"), name = "", 
+                       labels = c("wt","del17p"))
 Chr17_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 
 Chr8_R_plot <- RNA_biomart %>%
-  filter( !is.na(value), 
+  filter( !is.na(value), !is.na(chrom_abber_gain8q24),
           chromosome_name %in% c("8")) %>%
   ggplot(aes(start_position, value, group=primary)) +
   geom_point(size=0.5, alpha=0.2, color="darkgrey") +
@@ -286,8 +311,9 @@ Chr8_R_plot <- RNA_biomart %>%
   plot_chromosome_theme_RNA +
   pp_sra +
   ggtitle("gain8q24")+
-  coord_cartesian(ylim=c(0.95,1.1)) +
-  geom_rect(xmin = 117700001, ymin=0.95, ymax=1.1, xmax=146364022, color="gray40", size=1.5,  fill=NA)
+  geom_rect(xmin = 117700001, ymin=0.95, ymax=1.05, xmax=146364022, color="gray40", size=1.5,  fill=NA) +    
+  scale_color_manual(values=c("#92c5de", "#f4a582"), name = "", 
+                       labels = c("wt","gain8q"))
 Chr8_R_plot + theme(aspect.ratio=0.4, legend.position = 'none') 
 ```
 

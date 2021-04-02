@@ -1,0 +1,1367 @@
+---
+title: "Use ktsp to detect PG5"
+author: "Sophie Herbst & Mattias Vesterlund"
+output:
+  BiocStyle::html_document:
+    self_contained: true
+    code_download: true
+    code_folding: hide
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+Use ktsp on BCR and splicing genes in discovery dataset to train a classifier for detection of PG5.
+
+# Setup
+## Load libraries
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(limma)
+library(ggbeeswarm)
+library(ggpubr)
+library(readxl)
+library(glmnet)
+library(survival)
+library(survminer)
+require(switchBox)
+require(gridExtra)
+library(caret)
+library(MLmetrics)
+library(caret)
+library(MLmetrics)
+select <- dplyr::select
+
+set.seed(2020)
+```
+
+## Load data
+```{r}
+source("Data/Figure_layouts.R") 
+DIA <- readRDS("Robjects/DIA2_alldata.RData")
+load("Data/CLL_Proteomics_Setup.RData")
+load("Data/multiomics_MAE.RData")
+load("Data/CLL_Proteomics_ConsensusClustering.RData")
+Eagle2015 <- read_excel("Data/2015Eagle_ProteinAbundances.xls")
+load("Data/Swiss_to_hgnc.RData")
+Eagle2015 <- left_join(Eagle2015, Swiss_to_hgnc, by=c("SwissProt Acc. No."="uniprotswissprot"))
+```
+
+
+## Format data
+### Select BCR and spliceosomal proteins present in all datasets
+```{r, message=FALSE}
+BCR_splice_proteins_overlap <- DIA %>% 
+  filter(PG.ProteinGroups %in% c(splice_genes, BCR_genes)) %>%
+  select(Sample, PG.ProteinGroups, log.norm.MS2Quantity) %>%
+  pivot_wider(names_from = Sample, values_from = log.norm.MS2Quantity) %>%
+  column_to_rownames("PG.ProteinGroups") %>%
+  as.matrix() %>%
+  na.omit() %>%
+  rownames()
+
+BCR_splice_proteins_overlap <- rownames(multiomics_MAE[ BCR_splice_proteins_overlap , , "proteomics" ]) %>% 
+  unlist %>% unname
+
+### BCR and splicing proteins without NA
+BCR_splice_DIA_ALL_PSMs <- DIA %>% 
+  filter(cohort %in% c("Germany_1","Germany_2","Germany3","Sweden_1")) %>%
+  filter(PG.ProteinGroups %in% BCR_splice_proteins_overlap) %>%
+  select(Sample, PG.ProteinGroups, raw.PG.RunEvidenceCount) %>%
+  pivot_wider(names_from = Sample, values_from = raw.PG.RunEvidenceCount) %>%
+  column_to_rownames("PG.ProteinGroups") %>%
+  as.matrix() %>%
+  t()
+
+
+RMV<-c("SNRPC",
+"RAC1",
+"NCBP2",
+"RELA",
+"CRNKL1",
+"CCDC12",
+"LSM3",
+"SMNDC1",
+"IKBKG",
+"TXNL4A",
+"PLRG1",
+"VAV1",
+"VAV2",
+"CARD11")
+
+#here we remove based on min peptides <3. This is based on all 36 samples belonging to Germany_1.
+
+BCR_splice_proteins_overlap<-setdiff(BCR_splice_proteins_overlap,RMV)
+
+
+
+```
+
+
+### Create matrices BCR and spliceosomal proteins
+#### DIA Germany_1
+```{r}
+### BCR and splicing proteins without NA
+BCR_splice_DIA_Germany_1 <- DIA %>% 
+  filter(cohort == "Germany_1") %>%
+  filter(PG.ProteinGroups %in% BCR_splice_proteins_overlap) %>%
+  select(Sample, PG.ProteinGroups, log.norm.MS2Quantity) %>%
+  pivot_wider(names_from = Sample, values_from = log.norm.MS2Quantity) %>%
+  column_to_rownames("PG.ProteinGroups") %>%
+  as.matrix() %>%
+  na.omit() %>% 
+  t()
+
+
+```
+
+#### HiRIEF Germany_1
+```{r}
+BCR_splice_HiRIEF_Germany_1 <- 
+  assay(multiomics_MAE[ BCR_splice_proteins_overlap , , "proteomics" ]) %>%
+  t()
+
+
+
+stopifnot(ncol(BCR_splice_DIA_Germany_1) == ncol(BCR_splice_HiRIEF_Germany_1 ) )
+stopifnot( !any( is.na(BCR_splice_HiRIEF_Germany_1)) )
+```
+
+```{r, message=FALSE, warning=FALSE}
+meta_Germany <- read_excel("Data/20200721_Patient_Annotation_health_records_pseud.xlsx",
+  col_types = c( rep("text", 6), "skip", "text", rep("numeric", 7),  rep("skip", 4), "text", "date", "text",
+                rep("date", 4), rep("text", 4), "date", "numeric", "date", "skip",
+                "skip", "skip", "skip")
+  )
+
+patient_lookup_germany <- read_delim("Data/Patient_Lookup_IDs.txt", delim = "\t")
+
+meta_Germany <- left_join(meta_Germany, patient_lookup_germany %>% select(-patient_ID_OMZ_first), by= c( "OMZ_Pat_ID", "NCT_Pat_ID"  ) )
+
+meta_Germany$PG <- as.factor(CCP_group5[meta_Germany$patient_ID_CLL])
+
+meta_HiRIEF <- meta_Germany %>%
+  filter(!is.na(PG), diagnosis == "CLL") %>%
+  select(patient_ID_CLL, PG, sampleDate, date_follow_up, alive, date_death, treatment_status )
+
+meta_HiRIEF <- meta_HiRIEF %>%
+  mutate(
+    OS = difftime( date_death, sampleDate, units = "weeks" ),
+    ObsTime_OS = if_else( alive == 0, OS ,
+           difftime( date_follow_up, sampleDate, units = "weeks" ) ) )
+```
+
+#### DIA Germany_2
+```{r}
+BCR_splice_DIA_Germany_2 <- DIA %>% 
+  filter(cohort == "Germany_2") %>%
+  filter(PG.ProteinGroups %in% BCR_splice_proteins_overlap  ) %>%
+  select(Sample, PG.ProteinGroups, log.norm.MS2Quantity) %>%
+  pivot_wider(names_from = Sample, values_from = log.norm.MS2Quantity) %>%
+  column_to_rownames("PG.ProteinGroups") %>%
+  as.matrix() %>%
+  na.omit() %>% 
+  t()
+
+BCR_splice_DIA_Germany_2<- BCR_splice_DIA_Germany_2[,colnames(BCR_splice_DIA_Germany_1)] 
+
+stopifnot(all( colnames(BCR_splice_DIA_Germany_1) == colnames(BCR_splice_DIA_Germany_2 ) ) )
+stopifnot( !any( is.na(BCR_splice_DIA_Germany_2)) )
+
+```
+
+#### DIA Germany_3
+```{r}
+BCR_splice_DIA_Germany_3 <- DIA %>% 
+  filter(cohort == "Germany_3") %>%
+  filter(PG.ProteinGroups %in% BCR_splice_proteins_overlap  ) %>%
+  select(Sample, PG.ProteinGroups, log.norm.MS2Quantity) %>%
+  pivot_wider(names_from = Sample, values_from = log.norm.MS2Quantity) %>%
+  column_to_rownames("PG.ProteinGroups") %>%
+  as.matrix() %>%
+  na.omit() %>% 
+  t()
+
+
+stopifnot(ncol(BCR_splice_DIA_Germany_1) == ncol(BCR_splice_DIA_Germany_3 ) )
+stopifnot( !any( is.na(BCR_splice_DIA_Germany_3)) )
+
+
+```
+
+#### DIA Sweden
+```{r}
+BCR_splice_DIA_Sweden <- DIA %>% 
+  filter(cohort == "Sweden_1") %>%
+  filter(PG.ProteinGroups %in% BCR_splice_proteins_overlap  ) %>%
+  select(Sample, PG.ProteinGroups, log.norm.MS2Quantity) %>%
+  pivot_wider(names_from = Sample, values_from = log.norm.MS2Quantity) %>%
+  column_to_rownames("PG.ProteinGroups") %>%
+  as.matrix() %>%
+  na.omit() %>% 
+  t()
+
+BCR_splice_DIA_Sweden<-BCR_splice_DIA_Sweden[,colnames(BCR_splice_DIA_Germany_1)] 
+
+
+stopifnot(all( colnames(BCR_splice_DIA_Germany_1) == colnames(BCR_splice_DIA_Sweden ) ) )
+stopifnot( !any( is.na(BCR_splice_DIA_Sweden)) )
+```
+
+#### Eagle et al.
+```{r}
+BCR_splice_Eagle <- Eagle2015 %>% 
+  filter(hgnc_symbol %in% BCR_splice_proteins_overlap ) %>%
+  dplyr::select(-(c(N:`P Value`, `Protein Name`, `SwissProt Acc. No.` ))) %>%
+  group_by(hgnc_symbol) %>%
+  dplyr::summarise_all(mean) %>%
+  ungroup() %>% as_tibble() %>%
+  column_to_rownames("hgnc_symbol") %>%
+  as.matrix() %>%
+  na.omit() %>% 
+  t()
+#The Eagle data set lacks 11 genes: ALYREF, AQR, HNRNPU, LSM4 LSM6 PPIL1 PRPF40A PRPF6 RBM22 SF3A2 XAB2 therefore we cannot run the code below. We allow it nonetheless to be smaller in this instance.
+
+#BCR_splice_Eagle <- BCR_splice_Eagle[,colnames(BCR_splice_DIA_Germany_1)] #This is aproblem because 11 genes are missing...
+
+
+#stopifnot(all( colnames(BCR_splice_DIA_Germany_1) == colnames(BCR_splice_Eagle ) ) )
+#stopifnot( !any( is.na(BCR_splice_Eagle)) )
+
+dim(BCR_splice_Eagle)
+```
+
+##### Annotation patients
+```{r}
+chr12_mean <- left_join(Eagle2015, metadata(multiomics_MAE)$gene_symbol_mapping[, c("hgnc_symbol", "chromosome_name")]) %>%
+  filter(chromosome_name == 12) %>%
+  gather("Pat", "Value", M1:UM9) %>%
+  group_by(hgnc_symbol, Pat, chromosome_name ) %>%
+  dplyr::summarise(Value = mean(Value)) %>% 
+  ungroup() %>%
+  group_by(Pat) %>%
+  dplyr::summarise(mean_chr12 = mean(Value, na.rm=TRUE))
+
+pat_anno_Eagle <- enframe(rownames(BCR_splice_Eagle), value = "Pat") %>% 
+  mutate(IGHV = if_else( grepl("UM", Pat), "U", "M")) %>%
+  dplyr::select(-name) %>%
+  left_join(chr12_mean) %>%
+  mutate(upper_20_perc_chr12 = as.factor(as.numeric(mean_chr12 >= quantile(chr12_mean$mean_chr12, probs = c(0.8) ) ) ) ) %>%
+  dplyr::select(-mean_chr12) %>%
+  column_to_rownames("Pat") 
+```
+
+
+### Compare values datasets
+```{r}
+( bind_rows(
+ ( BCR_splice_DIA_Germany_1 %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance") %>%
+  mutate(cohort ="DIA_Germany_1" ) ),
+( BCR_splice_HiRIEF_Germany_1%>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance") %>%
+  mutate(cohort ="HiRIEF_Germany_1" ) ),
+( BCR_splice_DIA_Sweden %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance") %>%
+  mutate(cohort ="DIA_Sweden" ) ),
+(  BCR_splice_DIA_Germany_2 %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance")%>%
+  mutate(cohort ="DIA_Germany_2" ) ),
+(  BCR_splice_DIA_Germany_3 %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance")%>%
+  mutate(cohort ="DIA_Germany_3" ) ) ,
+ (  BCR_splice_Eagle %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance")%>%
+  mutate(cohort ="Eagle" ) ) ) %>%
+  ggplot(aes( log_norm_protein_abundance, 
+              group= cohort ) ) +
+  geom_density(aes(colour= cohort), adjust = 1/2) +
+  #xlim(-2,2) + 
+  pp_sra )
+
+```
+
+
+### Scale datasets by dividing by sd - only for HiRIEF
+```{r}
+
+#BCR_splice_DIA_Germany_1 <- BCR_splice_DIA_Germany_1 / sd(BCR_splice_DIA_Germany_1)
+BCR_splice_HiRIEF_Germany_1 <- BCR_splice_HiRIEF_Germany_1 / sd(BCR_splice_HiRIEF_Germany_1)
+#BCR_splice_DIA_Germany_2 <- BCR_splice_DIA_Germany_2 / sd(BCR_splice_DIA_Germany_2)
+#BCR_splice_DIA_Sweden <- BCR_splice_DIA_Sweden / sd(BCR_splice_DIA_Sweden)
+#BCR_splice_Eagle <- BCR_splice_Eagle / sd(BCR_splice_Eagle)
+```
+
+### Compare values scaled datasets
+```{r}
+( bind_rows(
+ ( BCR_splice_DIA_Germany_1 %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance") %>%
+  mutate(cohort ="DIA_Germany_1" ) ),
+( BCR_splice_HiRIEF_Germany_1%>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance") %>%
+  mutate(cohort ="HiRIEF_Germany_1" ) ),
+( BCR_splice_DIA_Sweden %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance") %>%
+  mutate(cohort ="DIA_Sweden" ) ),
+(  BCR_splice_DIA_Germany_2 %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance")%>%
+  mutate(cohort ="DIA_Germany_2" ) ),
+(  BCR_splice_DIA_Germany_3 %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance")%>%
+  mutate(cohort ="DIA_Germany_3" ) ) ,
+ (  BCR_splice_Eagle %>%
+  as.data.frame() %>%
+  rownames_to_column("Protein") %>%
+  pivot_longer(cols = -Protein, names_to = "Sample", values_to = "log_norm_protein_abundance")%>%
+  mutate(cohort ="Eagle" ) ) ) %>%
+  ggplot(aes( log_norm_protein_abundance, 
+              group= cohort ) ) +
+  geom_density(aes(colour= cohort), adjust = 1/2) +
+  #xlim(-2,2) + 
+  pp_sra )
+
+
+
+```
+
+
+### Prepare TTFT data frame
+```{r}
+df_TTFT <- DIA %>% 
+  select(Sample:ID, Pat_ID, TTFT, ObsTime_TTFT, cohort, treatment_status, treatment_at_collection) %>%
+  unique
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_TTFT <- 
+  df_TTFT %>% 
+  mutate(time = ifelse(treatment_status ==  0, ObsTime_TTFT, 
+                       if_else(treatment_status ==  1, TTFT, as.difftime("NA")) ), 
+         status = ifelse(treatment_status == 0, 1, 
+                         if_else(treatment_status ==  1, 2, as.double(NA) ) ) )
+
+# Remove without any follow up or patients who were collected during treatment
+df_TTFT <- filter(df_TTFT, ObsTime_TTFT!=0) %>% 
+  filter(is.na(treatment_at_collection) | treatment_at_collection!="intreatment")
+```
+
+### Prepare TTT data frame
+```{r}
+df_TTT <- DIA %>% 
+  filter(grepl("Germany", cohort ) ) %>%
+  select(Sample:ID, Pat_ID, date_next_treatment, date_death, alive, sampleDate, date_follow_up, cohort, treatment_at_collection) %>%
+  unique %>%
+  # Remove without any follow up or patients who were collected during treatment
+  filter(is.na(treatment_at_collection) | treatment_at_collection!="intreatment") %>%
+  mutate(TTT = difftime(date_next_treatment, sampleDate, units = "weeks"),
+         ObsTime_TTT = if_else(alive==0, difftime(date_death,  sampleDate, units = "weeks"),
+                                      difftime(date_follow_up, sampleDate, units = "weeks" )) ,
+         received_next_treatment = if_else(is.na(TTT ), 0, 1 )) 
+
+
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_TTT <- 
+  df_TTT %>% 
+  mutate(time = ifelse(received_next_treatment ==  0, ObsTime_TTT, 
+                       if_else(received_next_treatment ==  1, TTT, as.difftime("NA")) ), 
+         status = ifelse(received_next_treatment == 0, 1, 
+                         if_else(received_next_treatment ==  1, 2, as.double(NA) ) ) )
+
+df_med_fu_TTT <- 
+  df_TTT %>% 
+  filter(!is.na(status)) %>%
+  mutate(status_med = if_else(status == 2,1, 2), time=time/4.3 ) 
+```
+
+#### Median follow up in months
+```{r median follow up time}
+df_med_fu_TTT <- df_med_fu_TTT %>%
+    dplyr::select(time, status_med)
+
+formel <- as.formula(paste0("Surv(time, status_med) ~ 1"))
+  
+survfit(Surv(time, status_med) ~ 1, data = df_med_fu_TTT)
+```
+
+### Prepare OS data frame from diagnosis
+```{r}
+df_OS <- DIA %>% 
+  select(Sample:ID, Pat_ID, alive, sampleDate, cohort, OS, ObsTime_OS) %>%
+  unique 
+
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_OS <- 
+  df_OS %>% 
+  mutate(time = ifelse(alive ==  0, OS , 
+                       if_else(alive ==  1, ObsTime_OS, as.difftime("NA")) ), 
+         status = ifelse(alive == 1, 1, 
+                         if_else(alive ==  0, 2, as.double(NA) ) ) )
+```
+
+### Prepare OS data frame from sample date
+```{r}
+df_OS_sampleDate <- DIA %>% 
+  select(Sample:ID, Pat_ID, alive, sampleDate, cohort, OS = OS_since_sample, ObsTime_OS = ObsTime_OS_since_sample) %>%
+  unique 
+
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_OS_sampleDate <- 
+  df_OS_sampleDate %>% 
+  mutate(time = ifelse(alive ==  0, OS , 
+                       if_else(alive ==  1, ObsTime_OS, as.difftime("NA")) ), 
+         status = ifelse(alive == 1, 1, 
+                         if_else(alive ==  0, 2, as.double(NA) ) ) )
+
+df_med_fu_OS <- 
+  df_OS_sampleDate %>% 
+  filter(!is.na(status)) %>%
+  mutate(status_med = if_else(status == 2,1, 2), time=time/4.3 ) 
+```
+
+#### Median follow up in months
+```{r median follow up time OS}
+df_med_fu_OS <- df_med_fu_OS %>%
+    dplyr::select(time, status_med)
+
+formel <- as.formula(paste0("Surv(time, status_med) ~ 1"))
+  
+survfit(Surv(time, status_med) ~ 1, data = df_med_fu_OS)
+```
+
+
+# Analysis
+
+## train K-tsp classifier on DIA Germany_1 both Overlap and BCR/splice alone  
+Not yet optimized in any sense, I will monkey around with this some more.
+```{r}
+#construct design and response matrix
+BCR_splice_DIA_Germany_1dim = dim(BCR_splice_DIA_Germany_1)
+print(sprintf("Prediction for: #samples: %d; #features: %d",
+              BCR_splice_DIA_Germany_1dim[1], BCR_splice_DIA_Germany_1dim[2]))
+
+
+
+## fy - create a factor with true or false for PG5 for Germany_1
+fy <- left_join(
+  enframe( rownames(BCR_splice_DIA_Germany_1), value = "Sample", name=NULL ),
+DIA %>%
+  select(Sample, PG) %>%
+  unique %>%
+  transmute("PG5"= PG == "PG5", Sample) )
+n_fy <- fy$Sample
+fy <- fy$PG5
+names(fy) <- n_fy
+fy2<-as.factor(fy)
+
+
+
+#### iterative crossvalidation to optimize classifier run 100 times for 1-20 kTSP pairs
+df_BCR_splice_DIA_Germany_1<-as.data.frame(BCR_splice_DIA_Germany_1)
+df_BCR_splice_DIA_Germany_1$class<-fy2
+
+results <- data.frame(iter=numeric(), kval=numeric(), F1score=numeric())
+for (i in 1:100) {
+  trainIndex <- createDataPartition(df_BCR_splice_DIA_Germany_1$class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+  Train <- BCR_splice_DIA_Germany_1[ trainIndex,]
+  Test  <- BCR_splice_DIA_Germany_1[-trainIndex,]
+  fy3<-fy2[trainIndex]
+  fy4<-fy2[-trainIndex]
+
+  for (j in 1:20){
+    classifier<-SWAP.Train.KTSP(t(Train), fy3, FilterFunc=SWAP.Filter.Wilcoxon,krange=c(j))
+    testPrediction <- SWAP.KTSP.Classify(t(Test), classifier)
+    if (length(unique((as.numeric(testPrediction)-1)))==1) {
+      F1score<-NaN
+    } else{
+      F1score<-F1_Score(y_pred = (as.numeric(testPrediction)-1), y_true = (as.numeric(fy4)-1), positive = "1")
+    } 
+    df<-c(i,j,F1score)
+    
+    results<-rbind(results, setNames(df, names(results)))
+
+    
+  }
+
+  
+}
+names(results)<-c("iter","kval","F1score")
+results$kval<-as.factor(results$kval)
+ggplot(results,aes(x=kval, y=F1score, fill=kval )) +
+  geom_boxplot()
+
+### 8 looks good, so we pick that, a smaller number might work but we want to make it robust by including a few more Pairs 
+### Here we run 1000 iterations and check which Pairs are the most common.
+
+results2 <- data.frame(iter=numeric(), kval=numeric(), F1score=numeric())
+Pairs<-data.frame(gene1=character(), gene2=character())
+
+for (i in 1:1000) {
+  trainIndex <- createDataPartition(df_BCR_splice_DIA_Germany_1$class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+  Train <- BCR_splice_DIA_Germany_1[ trainIndex,]
+  Test  <- BCR_splice_DIA_Germany_1[-trainIndex,]
+  fy3<-fy2[trainIndex]
+  fy4<-fy2[-trainIndex]
+
+  
+    classifier<-SWAP.Train.KTSP(t(Train), fy3, FilterFunc=SWAP.Filter.Wilcoxon,krange=c(8))
+    testPrediction <- SWAP.KTSP.Classify(t(Test), classifier)
+    if (length(unique((as.numeric(testPrediction)-1)))==1) {
+      F1score<-NaN
+    } else{
+      F1score<-F1_Score(y_pred = (as.numeric(testPrediction)-1), y_true = (as.numeric(fy4)-1), positive = "1")
+    } 
+    df<-c(i,j,F1score)
+    
+    results2<-rbind(results2, setNames(df, names(results2)))
+    Pairs<-rbind(Pairs,classifier$TSPs)
+
+    
+  
+
+  
+}
+
+Pairs$gene1_gene2<-paste(Pairs$gene1, Pairs$gene2, sep = "_", collapse = NULL)
+
+tabP<-table(Pairs[,1:2])
+tabP2<-table(Pairs[3])[order(table(Pairs[,3]),decreasing=T)]
+SelectedPairs2<-matrix(unlist(strsplit(rownames(tabP2[1:8]),"_")), ncol =2, byrow=T)
+
+##Rerunning the algorithm above changes very little. The same 8 Pairs are picked everytime.
+###The Pairs are: AQR_PLCG2,	SNRPB2_PIK3AP1, SNRPA1_BTK, DDX5_BTK, HNRNPC_GRB2, SNRPB2_NFKB1,	SNRPA1_PPIH, SRSF7_GRB2.	
+
+classifier <- SWAP.Train.KTSP(t(BCR_splice_DIA_Germany_1), fy2, RestrictedPairs = SelectedPairs2,krange=c(8))
+tsps<-classifier$TSPs
+tsps[,]<-SelectedPairs2[,]
+tsps<-as.data.frame(tsps)
+rownames(tsps)<-c(paste(tsps$gene1,tsps$gene2,sep=","))
+classifier$TSPs<-tsps
+
+
+### Extract the TSP from the classifier
+classifier$TSPs
+classifier$tieVote[1:8]<-c("both")
+names(classifier$tieVote)[1:8]<-rownames(tsps)
+
+ktspStatDefault <- SWAP.KTSP.Statistics(inputMat = t(BCR_splice_DIA_Germany_1),
+                                        classifier = classifier)
+
+
+
+### Show default statistics
+head(ktspStatDefault$statistics)
+ktspStatThreshold <- SWAP.KTSP.Statistics(inputMat = t(BCR_splice_DIA_Germany_1),
+                                          classifier = classifier,  CombineFunc = function(x) sum(x) > 5.5 )
+
+head(ktspStatThreshold$statistics)
+
+
+## ### Make a heatmap showing the individual TSPs votes
+colorForRows <- as.character(1+as.numeric(fy2))
+
+heatmap(1*ktspStatThreshold$comparisons, scale="none",
+   margins = c(10, 5), cexCol=1.5, cexRow=0.5,
+    labRow=fy2, RowSideColors=colorForRows)
+title("BCR_Splice selected pairs")
+
+
+trainingPrediction <- SWAP.KTSP.Classify(t(BCR_splice_DIA_Germany_1), classifier,
+                                         DecisionFunc = function(x) sum(x) > 6.5 )
+table(trainingPrediction, fy2)
+
+testPrediction <- SWAP.KTSP.Classify(t(BCR_splice_HiRIEF_Germany_1), classifier,
+                                     DecisionFunc = function(x) sum(x) > 6.5)
+
+###Make a vector of HiRIEF classification that is true or false.
+CCP_group5.2<-CCP_group5
+CCP_group5.2[which(CCP_group5 <5)]<-FALSE;
+CCP_group5.2[which(CCP_group5 >5)]<-FALSE;
+CCP_group5.2[which(CCP_group5 ==5)]<-TRUE
+CCP_group5.2<-as.factor(as.logical(CCP_group5.2))
+table(testPrediction, CCP_group5.2)
+
+
+##for Eagle we try with omitting one of the pairs due to missing data:
+SelectedPairs3<-SelectedPairs2[2:8,] #remove missing pair since Eagle does not contain AQR.
+classifier.Eagle <- SWAP.Train.KTSP(t(BCR_splice_DIA_Germany_1), fy2, RestrictedPairs = SelectedPairs3,krange=c(7))
+tsps.Eagle<-classifier.Eagle$TSPs
+tsps.Eagle[,]<-SelectedPairs3[,]
+tsps.Eagle<-as.data.frame(tsps.Eagle)
+rownames(tsps.Eagle)<-c(paste(tsps.Eagle$gene1,tsps.Eagle$gene2,sep=","))
+classifier.Eagle$TSPs<-tsps.Eagle
+
+
+### Extract the TSP from the classifier
+classifier.Eagle$TSPs
+classifier.Eagle$tieVote[1:7]<-c("both")
+names(classifier.Eagle$tieVote)[1:7]<-rownames(tsps.Eagle)
+
+ktspStatDefault.Eagle <- SWAP.KTSP.Statistics(inputMat = t(BCR_splice_DIA_Germany_1),
+                                        classifier = classifier.Eagle)
+
+
+### Show default statistics
+#### This is suboptimal, because we actually get a decent performance in the training and test (HiRIEF) sets with a threshold of 6.5. 
+#### But below we will lower that to 5.5.
+head(ktspStatDefault.Eagle$statistics)
+ktspStatThreshold.Eagle <- SWAP.KTSP.Statistics(inputMat = t(BCR_splice_DIA_Germany_1),
+                                          classifier = classifier.Eagle,  CombineFunc = function(x) sum(x) > 5.5 )
+
+head(ktspStatThreshold.Eagle$statistics)
+
+
+## ### Make a heatmap showing the individual TSPs votes
+colorForRows <- as.character(1+as.numeric(fy2))
+
+heatmap(1*ktspStatThreshold.Eagle$comparisons, scale="none",
+   margins = c(10, 5), cexCol=1.5, cexRow=0.5,
+    labRow=fy2, RowSideColors=colorForRows)
+title("BCR_Splice selected pairs")
+
+
+trainingPrediction.Eagle <- SWAP.KTSP.Classify(t(BCR_splice_DIA_Germany_1), classifier.Eagle,
+                                         DecisionFunc = function(x) sum(x) > 6.5 )
+table(trainingPrediction.Eagle, fy2)
+
+testPrediction.Eagle <- SWAP.KTSP.Classify(t(BCR_splice_HiRIEF_Germany_1), classifier.Eagle,
+                                     DecisionFunc = function(x) sum(x) > 6.5)
+
+
+table(testPrediction.Eagle, CCP_group5.2)
+
+
+```
+
+#### Apply K-tsp classifier
+```{r}
+### apply to Germany_2
+testPredictionDIAGermany2 <- SWAP.KTSP.Classify(t(BCR_splice_DIA_Germany_2), classifier,
+                                     DecisionFunc = function(x) sum(x) > 6.5)
+
+message(paste0( round(sum(testPredictionDIAGermany2==TRUE)/ length(testPredictionDIAGermany2)*100,2), "% of patients (", sum(testPredictionDIAGermany2==TRUE), " out of ", length(testPredictionDIAGermany2), ") were classified as PG5 by ktsp in cohort Germany_2." ) )
+
+### apply to Sweden-DIa
+testPredictionDIASweden <- SWAP.KTSP.Classify(t(BCR_splice_DIA_Sweden), classifier,
+                                     DecisionFunc = function(x) sum(x) > 6.5)
+
+message(paste0( round(sum(testPredictionDIASweden==TRUE)/ length(testPredictionDIASweden)*100,2), "% of patients (", sum(testPredictionDIASweden==TRUE), " out of ", length(testPredictionDIASweden), ") were classified as PG5 by ktsp in cohort Sweden_1." ) )
+
+### apply to Germany_3
+testPredictionDIAGermany3 <- SWAP.KTSP.Classify(t(BCR_splice_DIA_Germany_3), classifier,
+                                     DecisionFunc = function(x) sum(x) > 6.5)
+
+message(paste0( round(sum(testPredictionDIAGermany3==TRUE)/ length(testPredictionDIAGermany3)*100, 2), "% of patients (", sum(testPredictionDIAGermany3==TRUE), " out of ", length(testPredictionDIAGermany3), ") were classified as PG5 by ktsp in cohort Germany_3." ) )
+
+### Apply on combined Germany_2, Germany_3 cohorts
+testPredictionDIAGermany2_3 <- SWAP.KTSP.Classify(t(rbind(BCR_splice_DIA_Germany_2, 
+                                                        BCR_splice_DIA_Germany_3 ) ), classifier,
+                                     DecisionFunc = function(x) sum(x) > 6.5)
+
+message(paste0( round(sum(testPredictionDIAGermany2_3==TRUE)/ length(testPredictionDIAGermany2_3)*100, 2), "% of patients (", sum(testPredictionDIAGermany2_3==TRUE), " out of ", length(testPredictionDIAGermany2_3), ") were classified as PG5 by ktsp in the combined cohort Germany_2 and Germany_3." ) )
+
+
+```
+
+
+
+
+
+## Add prediction from Ktsp
+```{r}
+pred_DIA_Germany_2 <- enframe(testPredictionDIAGermany2, name="Sample", value= "PG5_predicted_ktsp")
+pred_DIA_Germany_2
+
+
+pred_DIA_Germany_3 <- enframe(testPredictionDIAGermany3, name="Sample", value= "PG5_predicted_ktsp")
+pred_DIA_Germany_3
+
+pred_DIA_Sweden <- enframe(testPredictionDIASweden, name="Sample", value= "PG5_predicted_ktsp")
+pred_DIA_Sweden
+
+pred_DIA_Germany_2_3 <- enframe(testPredictionDIAGermany2_3, name="Sample", value= "PG5_predicted_ktsp")
+pred_DIA_Germany_2_3
+
+pred_DIA_PG5 <- bind_rows(pred_DIA_Germany_2_3, pred_DIA_Sweden)
+```
+
+
+#### Apply K-tsp classifier.Eagle
+```{r}
+
+
+### apply to Eagle et al.
+testPredictionEagle.Eagle <- SWAP.KTSP.Classify(t(BCR_splice_Eagle), classifier.Eagle,
+                                     DecisionFunc = function(x) sum(x) > 5.5)
+
+message(paste0( round(sum(testPredictionEagle.Eagle==TRUE)/ length(testPredictionEagle.Eagle)*100, 2), "% of patients (", sum(testPredictionEagle.Eagle==TRUE), " out of ", length(testPredictionEagle.Eagle), ") were classified as PG5 by ktsp in cohort Eagle et al." ) )
+
+
+```
+
+
+## Add prediction from Ktsp.Eagle
+```{r}
+
+
+pred_Eagle.Eagle <- enframe(testPredictionEagle.Eagle, name="Sample", value= "PG5_predicted_ktsp")
+pred_Eagle.Eagle
+
+```
+
+
+
+
+
+## Inspect the potential PG5 patients
+### Genetic characteristics
+#### Germany_2 and Germany_3
+```{r}
+pred_DIA_Germany_2_3_ann <-  left_join(pred_DIA_Germany_2_3[, c( "PG5_predicted_ktsp", "Sample")],
+          DIA %>% 
+            select(Sample, IGHV_mutated, trisomy12, TP53, treatment_at_collection) %>% 
+            unique(),
+          by=c("Sample") )
+
+message("Prediction with ktsp:")
+pred_DIA_Germany_2_3_ann %>%
+  select(PG5_predicted_ktsp, IGHV_mutated) %>%
+  table()
+
+pred_DIA_Germany_2_3_ann %>%
+  select(PG5_predicted_ktsp, trisomy12) %>%
+  table()
+```
+
+
+#### Sweden_1
+```{r}
+pred_DIA_Sweden_1_ann <-  left_join(pred_DIA_Sweden[, c( "PG5_predicted_ktsp", "Sample")],
+          DIA %>% 
+            select(Sample, IGHV_mutated, trisomy12, TP53, treatment_at_collection) %>% 
+            unique(),
+          by=c("Sample") )
+
+message("Prediction with ktsp:")
+pred_DIA_Sweden_1_ann %>%
+  select(PG5_predicted_ktsp, IGHV_mutated) %>%
+  table()
+
+pred_DIA_Sweden_1_ann %>%
+  select(PG5_predicted_ktsp, trisomy12) %>%
+  table()
+```
+
+####Eagle
+```{r}
+left_join(pred_Eagle.Eagle, pat_anno_Eagle %>% rownames_to_column("Sample") ) %>%
+  select(PG5_predicted_ktsp, IGHV) %>%
+  table()
+
+left_join(pred_Eagle.Eagle, pat_anno_Eagle %>% rownames_to_column("Sample") ) %>%
+  select(PG5_predicted_ktsp, upper_20_perc_chr12) %>%
+  table()
+```
+
+
+#### Bias of PG5 for TP53?
+```{r}
+bind_rows(pred_DIA_Germany_2_3_ann,
+pred_DIA_Sweden_1_ann) %>%
+  filter(!is.na(TP53)) %>%
+  select(PG5_predicted_ktsp, TP53) %>%
+  table
+
+bind_rows(pred_DIA_Germany_2_3_ann,
+pred_DIA_Sweden_1_ann) %>%
+  filter(!is.na(TP53)) %>%
+  select(PG5_predicted_ktsp, TP53) %>%
+  table %>%
+  fisher.test()
+```
+
+### Mean pathway abundances PG5 vs other groups 
+
+#### Eagle
+##### BCR
+```{r}
+Eagle_BCR <- 
+  Eagle2015 %>% 
+  filter(hgnc_symbol %in% BCR_genes) %>%
+  dplyr::select(-(c(N:`P Value`, `Protein Name`, `SwissProt Acc. No.` ))) %>%
+  group_by(hgnc_symbol) %>%
+  dplyr::summarise_all(mean) %>%
+  ungroup() %>%
+  gather("patient", "value", -hgnc_symbol) %>%
+  group_by(patient ) %>% 
+  dplyr::summarise(BCR = mean(value, na.rm=T) ) %>%
+  left_join(., pred_Eagle.Eagle[, c("PG5_predicted_ktsp", "Sample")], by=c("patient"="Sample")) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  ggplot(aes( PG5_predicted_ktsp, BCR, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none') +
+  ylab("Mean abundance of\nBCR proteins")
+
+Eagle_BCR + stat_compare_means() 
+```
+
+##### Spliceosome
+```{r}
+Eagle_splice <- 
+  Eagle2015 %>% 
+  filter(hgnc_symbol %in% splice_genes) %>%
+  dplyr::select(-(c(N:`P Value`, `Protein Name`, `SwissProt Acc. No.` ))) %>%
+  group_by(hgnc_symbol) %>%
+  dplyr::summarise_all(mean) %>%
+  ungroup() %>%
+  gather("patient", "value", -hgnc_symbol) %>%
+  group_by(patient ) %>% 
+  dplyr::summarise(splice = mean(value, na.rm=T) ) %>%
+  left_join(., pred_Eagle.Eagle[, c("PG5_predicted_ktsp", "Sample")], by=c("patient"="Sample")) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  ggplot(aes( PG5_predicted_ktsp, splice, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none') +
+  ylab("Mean abundance of\nsplice proteins")
+
+Eagle_splice + stat_compare_means() 
+```
+
+##### BCAA
+```{r}
+Eagle_BCAA <- 
+  Eagle2015 %>% 
+  filter(hgnc_symbol %in% BCAA_genes) %>%
+  dplyr::select(-(c(N:`P Value`, `Protein Name`, `SwissProt Acc. No.` ))) %>%
+  group_by(hgnc_symbol) %>%
+  dplyr::summarise_all(mean) %>%
+  ungroup() %>%
+  gather("patient", "value", -hgnc_symbol) %>%
+  group_by(patient ) %>% 
+  dplyr::summarise(BCAA = mean(value, na.rm=T) ) %>%
+  left_join(., pred_Eagle.Eagle[, c("PG5_predicted_ktsp", "Sample")], by=c("patient"="Sample")) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  ggplot(aes( PG5_predicted_ktsp, BCAA, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none') +
+  ylab("Mean abundance of\nBCAA proteins")
+
+Eagle_BCAA + stat_compare_means() 
+```
+
+##### Proteasome
+```{r}
+Eagle_proteasome <- 
+  Eagle2015 %>% 
+  filter(hgnc_symbol %in% proteasome_genes) %>%
+  dplyr::select(-(c(N:`P Value`, `Protein Name`, `SwissProt Acc. No.` ))) %>%
+  group_by(hgnc_symbol) %>%
+  dplyr::summarise_all(mean) %>%
+  ungroup() %>%
+  gather("patient", "value", -hgnc_symbol) %>%
+  group_by(patient ) %>% 
+  dplyr::summarise(mean_proteasome = mean(value, na.rm=T) ) %>%
+ left_join(., pred_Eagle.Eagle[, c("PG5_predicted_ktsp", "Sample")], by=c("patient"="Sample")) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  ggplot(aes( PG5_predicted_ktsp, mean_proteasome, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none') +
+  ylab("Mean abundance of\nproteasomal proteins")
+
+Eagle_proteasome + stat_compare_means() 
+```
+
+#### Germany_2 + Germany_3 + Sweden combined
+##### BCR
+```{r pathway abundances Germany 2 and 3 and Sweden BCR, message=FALSE}
+data_summary_violin <- function(x) {
+   m <- median(x)
+   ymin <- unname(quantile(x, 0.25))
+   ymax <- unname(quantile(x, 0.75))
+   return(c(y=m,ymin=ymin,ymax=ymax))
+}
+
+pred_dia<-rbind(pred_DIA_Germany_2_3,pred_DIA_Sweden)
+# BCR KTSP
+
+BCR_cohorts_combined <-DIA %>% 
+  filter(cohort %in% c("Germany_2", "Germany_3", "Sweden_1" ) ) %>% 
+  filter(PG.ProteinGroups %in% BCR_genes) %>%
+  left_join(., pred_dia[, c("PG5_predicted_ktsp", "Sample")]) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  dplyr::select(PG.ProteinGroups, PG5_predicted_ktsp, Sample, log.norm.MS2Quantity) %>%
+  group_by(Sample, PG5_predicted_ktsp) %>%
+  dplyr::summarise("mean_BCR"=mean(log.norm.MS2Quantity, na.rm=TRUE) ) %>%
+  ungroup() %>%
+  ggplot(aes( PG5_predicted_ktsp, mean_BCR, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_violin() +
+  stat_summary(fun.data=data_summary_violin) +
+  #geom_label(aes(label= Sample), nudge_x= -0.05, hjust=1 ) +
+  #geom_jitter(width=0.1) +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none', 
+        axis.title.x = element_blank()) +
+  scale_x_discrete(labels= c("other", "PG5")) +
+  ylab("Mean abundance of BCR proteins") 
+
+BCR_cohorts_combined + stat_compare_means(method="wilcox")
+```
+
+##### Spliceosome
+```{r pathway abundances Germany 2 and 3 and Sweden Spliceosome, message=FALSE}
+# Spliceosome - ktsp
+Spliceosome_cohorts_combined<-DIA %>% 
+  filter(cohort %in% c("Germany_2", "Germany_3", "Sweden_1" ) ) %>% 
+  filter(PG.ProteinGroups %in% splice_genes) %>%
+  left_join(., pred_dia[, c("PG5_predicted_ktsp", "Sample")]) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  dplyr::select(PG.ProteinGroups, PG5_predicted_ktsp, Sample, log.norm.MS2Quantity) %>%
+  group_by(Sample, PG5_predicted_ktsp) %>%
+  dplyr::summarise("mean_splice"=mean(log.norm.MS2Quantity, na.rm=TRUE) ) %>%
+  ungroup() %>%
+  ggplot(aes( PG5_predicted_ktsp, mean_splice, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_violin() +
+  stat_summary(fun.data=data_summary_violin) +
+  #geom_label(aes(label= Sample), nudge_x= -0.05, hjust=1 ) +
+  #geom_jitter(width=0.1) +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none', 
+        axis.title.x = element_blank()) +
+  scale_x_discrete(labels= c("other", "PG5")) +
+  ylab("Mean abundance of spliceosomal proteins")
+
+Spliceosome_cohorts_combined + stat_compare_means(method="wilcox")
+```
+
+##### BCAA
+```{r pathway abundances Germany 2 and 3 and Sweden BCAA, message=FALSE}
+# BCAA -ktsp
+BCAA_cohorts_combined<-DIA %>% 
+  filter(cohort %in% c("Germany_2", "Germany_3", "Sweden_1" ) ) %>% 
+  filter(PG.ProteinGroups %in% BCAA_genes) %>%
+  left_join(., pred_dia[, c("PG5_predicted_ktsp", "Sample")]) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  dplyr::select(PG.ProteinGroups, PG5_predicted_ktsp, Sample, log.norm.MS2Quantity) %>%
+  group_by(Sample, PG5_predicted_ktsp) %>%
+  dplyr::summarise("mean_BCAA"=mean(log.norm.MS2Quantity, na.rm=TRUE) ) %>%
+  ungroup() %>%
+  ggplot(aes( PG5_predicted_ktsp, mean_BCAA, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_violin() +
+  stat_summary(fun.data=data_summary_violin) +
+  #geom_label(aes(label= Sample), nudge_x= -0.05, hjust=1 ) +
+  #geom_jitter(width=0.1) +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none', 
+        axis.title.x = element_blank()) +
+  scale_x_discrete(labels= c("other", "PG5")) +
+  ylab("Mean abundance of BCAA proteins")
+BCAA_cohorts_combined + stat_compare_means(method="wilcox")
+```
+
+##### Proteasome
+```{r pathway abundances Germany 2 and 3 and Sweden Proteasome, message=FALSE}
+# Proteasome-ktsp
+Proteasome_cohorts_combined<-DIA %>% 
+  filter(cohort  %in% c("Germany_2", "Germany_3", "Sweden_1" ) ) %>% 
+  filter(PG.ProteinGroups %in% proteasome_genes) %>%
+  left_join(., pred_dia[, c("PG5_predicted_ktsp", "Sample")]) %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG5_predicted_ktsp)) %>%
+  dplyr::select(PG.ProteinGroups, PG5_predicted_ktsp, Sample, log.norm.MS2Quantity) %>%
+  group_by(Sample, PG5_predicted_ktsp) %>%
+  dplyr::summarise("mean_proteasome"=mean(log.norm.MS2Quantity, na.rm=TRUE) ) %>%
+  ungroup() %>%
+  ggplot(aes( PG5_predicted_ktsp, mean_proteasome, group= PG5_predicted_ktsp, fill=PG5_predicted_ktsp )) +
+  geom_violin() +
+  stat_summary(fun.data=data_summary_violin) +
+  #geom_label(aes(label= Sample), nudge_x= -0.05, hjust=1 ) +
+  #geom_jitter(width=0.1) +
+  pp_sra +
+  scale_fill_manual(values = c("gray",  colors_CCP[5]) )+
+  theme(legend.position = 'none', 
+        axis.title.x = element_blank()) +
+  scale_x_discrete(labels= c("other", "PG5")) +
+  ylab("Mean abundance of proteasomal proteins")
+Proteasome_cohorts_combined + stat_compare_means(method="wilcox")
+```
+
+
+
+### Time to next treatment PG5-like versus others
+#### Germany_2 + Germany_3
+```{r TTT Germany_2_3 PG5 ktsp}
+df_TTT_Germany_2_3_PG5_ktsp<-left_join(df_TTT, pred_DIA_Germany_2_3[, c("PG5_predicted_ktsp", "Sample")], by="Sample" )
+
+df_TTT_Germany_2_3_PG5_ktsp <- df_TTT_Germany_2_3_PG5_ktsp %>%
+    select(Sample,time, status, PG5_predicted_ktsp) %>%
+    mutate(PG5_predicted_ktsp = if_else(PG5_predicted_ktsp == T, "predicted PG5", 
+                                   if_else(PG5_predicted_ktsp == F, "other", "NA" ))) %>%
+    filter( !is.na(time), !is.na( status), !is.na(PG5_predicted_ktsp) ) %>% 
+    unique() %>%
+    dplyr::select(time, status, Factor = PG5_predicted_ktsp) %>%
+    mutate(BinFactor = Factor)
+
+df_TTT_Germany_2_3_PG5_ktsp$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of weeks
+df_TTT_Germany_2_3_PG5_ktsp$time <- df_TTT_Germany_2_3_PG5_ktsp$time/52.1428571
+  
+survfit_Germany_2_3_ktsp <- survfit(Surv(time, status) ~ BinFactor, data = df_TTT_Germany_2_3_PG5_ktsp)
+pp_sra_TTT <- pp_sra
+pp_sra_TTT[[2]]$aspect.ratio <- 1
+pp_sra_TTT[[2]]$text <- element_text(size=15)
+TTT_clusters_Germany_2_3_PG5_ktsp_CI <- ggsurvplot(survfit_Germany_2_3_ktsp, data = df_TTT_Germany_2_3_PG5_ktsp, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_Germany_2_3_ktsp$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = TRUE
+                 ) 
+
+TTT_clusters_Germany_2_3_PG5_ktsp_CI + ggtitle("DIA Germany_2 and Germany_3: ktsp-splice predicted PG5 and time to next treatment")
+
+
+TTT_clusters_Germany_2_3_PG5_ktsp <- ggsurvplot(survfit_Germany_2_3_ktsp, data = df_TTT_Germany_2_3_PG5_ktsp, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_Germany_2_3_ktsp$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = FALSE,
+                 pval.method = FALSE,
+                 conf.int = FALSE
+                 ) 
+```
+
+
+
+
+
+### Overall survival from sample date PG5-like versus others
+#### Germany_2 + Germany_3 + Sweden_1
+```{r OS from sample date Germany_2 and Germany_3 and sweden 1 PG5 ktsp}
+pred_dia<-rbind(pred_DIA_Germany_2,pred_DIA_Germany_3,pred_DIA_Sweden)
+df_OS_sampleDate_PG5_ktsp<-left_join(df_OS_sampleDate, pred_dia[, c("PG5_predicted_ktsp", "Sample")], by="Sample" )
+
+df_OS_sampleDate_PG5_ktsp <- df_OS_sampleDate_PG5_ktsp %>%
+    select(Sample,time, status, PG5_predicted_ktsp) %>%
+    mutate(PG5_predicted_ktsp = if_else(PG5_predicted_ktsp == T, "predicted PG5", 
+                                   if_else(PG5_predicted_ktsp == F, "other", "NA" ))) %>%
+    filter( !is.na(time), !is.na( status), !is.na(PG5_predicted_ktsp) ) %>% 
+    unique() %>%
+    dplyr::select(time, status, Factor = PG5_predicted_ktsp) %>%
+    mutate(BinFactor = Factor)
+
+df_OS_sampleDate_PG5_ktsp$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_OS_sampleDate_PG5_ktsp$time <- df_OS_sampleDate_PG5_ktsp$time/52.1428571
+  
+survfit_DIA_PG5_ktsp <- survfit(Surv(time, status) ~ BinFactor, data = df_OS_sampleDate_PG5_ktsp)
+pp_sra_OS <- pp_sra
+pp_sra_OS[[2]]$aspect.ratio <- 1
+pp_sra_OS[[2]]$text <- element_text(size=15)
+OS_clusters_PG5_ktsp_CI <- ggsurvplot(survfit_DIA_PG5_ktsp, data = df_OS_sampleDate_PG5_ktsp, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_ktsp$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = TRUE
+                 ) 
+
+OS_clusters_PG5_ktsp_CI + ggtitle("DIA Validation cohort: ktsp-splice predicted PG5 and overall survival")
+
+OS_clusters_PG5_ktsp <- ggsurvplot(survfit_DIA_PG5_ktsp, data = df_OS_sampleDate_PG5_ktsp, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_ktsp$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Survival",
+                 pval = FALSE,
+                 pval.method = FALSE,
+                 conf.int = FALSE
+                 ) 
+```
+
+
+##### No treated patients Germany_2 + Germany_3 + Sweden_1
+```{r OS from sample date Germany_2 and Germany_3 and sweden 1 PG5 ktsp untreated}
+pred_dia<-rbind(pred_DIA_Germany_2,pred_DIA_Germany_3,pred_DIA_Sweden)
+df_OS_sampleDate_PG5_ktsp<-left_join(df_OS_sampleDate, pred_dia[, c("PG5_predicted_ktsp", "Sample")], by="Sample" )
+df_OS_sampleDate_PG5_ktsp_untreated <- df_OS_sampleDate_PG5_ktsp %>% 
+  filter(Sample %in% (DIA %>% 
+                        select(Sample, treatment_at_collection) %>% 
+                        unique() %>% 
+                        filter(treatment_at_collection== "untreated") %>% 
+                        .$Sample) )
+
+df_OS_sampleDate_PG5_ktsp_untreated <- df_OS_sampleDate_PG5_ktsp_untreated %>%
+    select(Sample,time, status, PG5_predicted_ktsp) %>%
+    mutate(PG5_predicted_ktsp = if_else(PG5_predicted_ktsp == T, "predicted PG5", 
+                                   if_else(PG5_predicted_ktsp == F, "other", "NA" ))) %>%
+    filter( !is.na(time), !is.na( status), !is.na(PG5_predicted_ktsp) ) %>% 
+    unique() %>%
+    dplyr::select(time, status, Factor = PG5_predicted_ktsp) %>%
+    mutate(BinFactor = Factor)
+
+df_OS_sampleDate_PG5_ktsp_untreated$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_OS_sampleDate_PG5_ktsp_untreated$time <- df_OS_sampleDate_PG5_ktsp_untreated$time/52.1428571
+  
+survfit_DIA_PG5_ktsp_untreated <- survfit(Surv(time, status) ~ BinFactor, data = df_OS_sampleDate_PG5_ktsp_untreated)
+pp_sra_OS <- pp_sra
+pp_sra_OS[[2]]$aspect.ratio <- 1
+pp_sra_OS[[2]]$text <- element_text(size=15)
+OS_clusters_PG5_ktsp_CI_untreated <- ggsurvplot(survfit_DIA_PG5_ktsp_untreated, data = df_OS_sampleDate_PG5_ktsp_untreated, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_ktsp_untreated$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = TRUE
+                 ) 
+
+OS_clusters_PG5_ktsp_CI_untreated + ggtitle("DIA Validation cohort: ktsp-splice predicted PG5 and overall survival")
+
+OS_clusters_PG5_ktsp_untreated <- ggsurvplot(survfit_DIA_PG5_ktsp_untreated, data = df_OS_sampleDate_PG5_ktsp_untreated, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_ktsp_untreated$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Survival",
+                 pval = FALSE,
+                 pval.method = FALSE,
+                 conf.int = FALSE
+                 ) 
+```
+
+##### No treated patients all cohorts including HiRIEF
+
+```{r}
+meta_HiRIEF_untreated <- meta_HiRIEF %>% filter(treatment_status=="untreated") %>%
+  mutate(PG5_predicted_ktsp = as.factor(PG==5) )
+
+pred_dia<-rbind(pred_DIA_Germany_2,pred_DIA_Germany_3,pred_DIA_Sweden)
+df_OS_sampleDate_PG5_ktsp<-left_join(df_OS_sampleDate, pred_dia[, c("PG5_predicted_ktsp", "Sample")], by="Sample" )
+df_OS_sampleDate_PG5_ktsp_untreated <- df_OS_sampleDate_PG5_ktsp %>% 
+  filter(Sample %in% (DIA %>% 
+                        select(Sample, treatment_at_collection) %>% 
+                        unique() %>% 
+                        filter(treatment_at_collection== "untreated") %>% 
+                        .$Sample) )
+
+meta_HiRIEF_untreated <- meta_HiRIEF_untreated %>% mutate(time = ifelse(alive ==  0, OS , 
+                       if_else(alive ==  1, ObsTime_OS, as.difftime("NA")) ), 
+         status = ifelse(alive == 1, 1, 
+                         if_else(alive ==  0, 2, as.double(NA) ) ) )
+
+df_OS_sampleDate_PG5_all_untreated <- bind_rows(
+  meta_HiRIEF_untreated %>% select( PG5_predicted_ktsp, "Sample" = patient_ID_CLL, time, status ),
+  df_OS_sampleDate_PG5_ktsp_untreated %>% select(PG5_predicted_ktsp, Sample, time, status  ) )
+
+df_OS_sampleDate_PG5_all_untreated <- df_OS_sampleDate_PG5_all_untreated %>%
+    mutate(PG5_predicted_ktsp = if_else(PG5_predicted_ktsp == T, "predicted PG5", 
+                                   if_else(PG5_predicted_ktsp == F, "other", "NA" ))) %>%
+    filter( !is.na(time), !is.na( status), !is.na(PG5_predicted_ktsp) ) %>% 
+    unique() %>%
+    dplyr::select(time, status, Factor = PG5_predicted_ktsp) %>%
+    mutate(BinFactor = Factor)
+
+df_OS_sampleDate_PG5_all_untreated$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_OS_sampleDate_PG5_all_untreated$time <- df_OS_sampleDate_PG5_all_untreated$time/52.1428571
+  
+survfit_DIA_PG5_all_untreated <- survfit(Surv(time, status) ~ BinFactor, data = df_OS_sampleDate_PG5_all_untreated)
+pp_sra_OS <- pp_sra
+pp_sra_OS[[2]]$aspect.ratio <- 1
+pp_sra_OS[[2]]$text <- element_text(size=15)
+OS_clusters_PG5_all_CI_untreated <- ggsurvplot(survfit_DIA_PG5_all_untreated, data = df_OS_sampleDate_PG5_all_untreated, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_all_untreated$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = TRUE
+                 ) 
+
+OS_clusters_PG5_all_CI_untreated + ggtitle("All untreated patients: ktsp-splice predicted PG5 and overall survival")
+
+OS_clusters_PG5_all_untreated <- ggsurvplot(survfit_DIA_PG5_all_untreated, data = df_OS_sampleDate_PG5_all_untreated, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_all_untreated$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Survival",
+                 pval = FALSE,
+                 pval.method = FALSE,
+                 conf.int = FALSE
+                 ) 
+```
+
+
+
+
+### Time to first treatment PG5-like versus others
+#### Germany_2 + Germany_3 + Sweden_1
+```{r TTFT Germany_2 and Germany_3 and Sweden_1 PG5 ktsp}
+pred_dia<-rbind(pred_DIA_Germany_2,pred_DIA_Sweden, pred_DIA_Germany_3)
+df_surv_PG5_ktsp<-left_join(df_TTFT, pred_dia[, c("PG5_predicted_ktsp", "Sample")], by="Sample" )
+
+df_surv_PG5_ktsp <- df_surv_PG5_ktsp %>%
+    select(Sample,time, status, PG5_predicted_ktsp) %>%
+    mutate(PG5_predicted_ktsp = if_else(PG5_predicted_ktsp == T, "predicted PG5", 
+                                   if_else(PG5_predicted_ktsp == F, "other", "NA" ))) %>%
+    filter( !is.na(time), !is.na( status), !is.na(PG5_predicted_ktsp) ) %>% 
+    unique() %>%
+    dplyr::select(time, status, Factor = PG5_predicted_ktsp) %>%
+    mutate(BinFactor = Factor)
+
+df_surv_PG5_ktsp$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_surv_PG5_ktsp$time <- df_surv_PG5_ktsp$time/52.1428571
+  
+survfit_DIA_PG5_ktsp <- survfit(Surv(time, status) ~ BinFactor, data = df_surv_PG5_ktsp)
+pp_sra_surv <- pp_sra
+pp_sra_surv[[2]]$aspect.ratio <- 1
+pp_sra_surv[[2]]$text <- element_text(size=15)
+TTFT_clusters_PG5_ktsp <- ggsurvplot(survfit_DIA_PG5_ktsp, data = df_surv_PG5_ktsp, 
+                 xlab = "Time in years",
+                 palette = c("grey", colors_CCP[5]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_DIA_PG5_ktsp$strata) ),
+                 legend.title = "PG",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = TRUE
+                 ) 
+
+TTFT_clusters_PG5_ktsp + ggtitle("DIA Germany_2 + 3 + Sweden_1: ktsp-splice predicted PG5 and time to first treatment")
+```
+
+# Conclusion
+# Save important objects
+```{r}
+save(pred_DIA_PG5, file = "Robjects/pred_DIA_PG5.RData")
+```
+
+# Save important plots
+```{r}
+save(BCR_cohorts_combined,
+     Spliceosome_cohorts_combined,
+     BCAA_cohorts_combined,
+     Proteasome_cohorts_combined,
+     OS_clusters_PG5_ktsp,
+     OS_clusters_PG5_ktsp_untreated,
+     OS_clusters_PG5_all_untreated, 
+     Eagle_BCR,
+     Eagle_splice,
+     Eagle_proteasome,
+     Eagle_BCAA,
+     file = "Robjects/DIA_Proteomics_PG5_validation_Plots.RData")
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```
+
+```{r knitr exit}
+knitr::knit_exit()
+```
+

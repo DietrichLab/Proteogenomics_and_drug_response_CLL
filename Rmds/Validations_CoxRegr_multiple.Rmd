@@ -1,0 +1,238 @@
+---
+title: "Cox Regression PG5 and other covariated HiRIEF and DIA cohorts"
+author: Sophie Herbst & Roider Tobias
+output:
+  BiocStyle::html_document:
+    self_contained: true
+    code_download: true
+    code_folding: hide
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+options(digits=3, width=80)
+opts_chunk$set( fig.small=FALSE, dpi = 300)
+```
+
+# Setup
+## Load packages
+```{r message=FALSE, warning=FALSE}
+library(survival)
+library(maxstat)
+library(survminer)
+library(tidyverse)
+library(MultiAssayExperiment)
+library(EnvStats)
+library(readxl)
+```
+
+## Load data
+```{r}
+source("Data/Figure_layouts.R") 
+
+# Load HiRIEF
+load("Data/multiomics_MAE.RData")
+
+load("Data/CLL_Proteomics_ConsensusClustering.RData")
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+
+DIA <- readRDS("Robjects/DIA2_alldata.RData")
+load("Robjects/pred_DIA_PG5.RData")
+```
+
+## Format data
+### HiRIEF
+```{r message=FALSE, warning=FALSE}
+metaData_HiRIEF <- as.data.frame(colData(multiomics_MAE))
+
+# Set 'time' either to observation time (w/o next treatment) or to actual time to next treatment
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+metaData_HiRIEF_TTT <- metaData_HiRIEF %>% 
+  dplyr::rename(TTNT = timeDiff_TTNT_orig) %>%
+  mutate(time = ifelse(is.na(TTNT), ObsTime, TTNT), 
+         status = ifelse(is.na(TTNT), 1, 2))
+
+# Remove without any follow up
+metaData_HiRIEF_TTT <- filter(metaData_HiRIEF_TTT, ObsTime!=0) %>% filter(!treatment_status=="intreatment")
+
+
+```
+
+### DIA
+```{r}
+metaData_DIA <- DIA %>%
+  filter(!treatment_status=="intreatment", !cohort %in% c( "High_risk" , "Germany_1") ) %>%
+  select( Sample, cohort, Pat_ID, TP53:IGHV_mutated, 
+          ObsTime_OS, ObsTime_OS_since_sample, ObsTime_TTT, 
+          alive, treatment_status, treatment_at_collection) %>%
+  unique  %>%
+  mutate( IGHV = IGHV_mutated, treated_at_collection = if_else(treatment_at_collection == "pretreated", TRUE,
+                                                               if_else(treatment_at_collection == "untreated", FALSE, as.logical(NA)  )))
+metaData_DIA <- left_join(metaData_DIA, 
+                          pred_DIA_PG5 %>% 
+                            transmute(Sample, PG5 = PG5_predicted_ktsp))
+
+metaData_DIA_TTNT <- metaData_DIA %>%
+  filter(!is.na( ObsTime_TTT ), !is.na(treatment_status)) %>%
+  mutate(time = ObsTime_TTT, 
+         status = ifelse(treatment_status ==0, 1, 2))
+
+metaData_DIA_OS_sample <- metaData_DIA %>%
+  filter(!is.na( ObsTime_OS_since_sample ), !is.na(alive)) %>%
+  mutate(time = ObsTime_OS_since_sample, 
+         status = ifelse(alive ==1, 1, 2))
+
+metaData_DIA_OS_diag <- metaData_DIA %>%
+  filter(!is.na( ObsTime_OS ), !is.na(alive)) %>%
+  mutate(time = ObsTime_OS, 
+         status = ifelse(alive ==1, 1, 2))
+```
+
+# Analysis
+## Multivariate analysis of common covariates and PG5
+### DIA (OS from sample)
+#### All patients
+##### Extract some values
+###### IGHV plot
+```{r}
+COX_DIA_IGHV_PG5 <- summary(coxph(Surv(time, status) ~ IGHV+ PG5 + PG5:IGHV, 
+      data = metaData_DIA_OS_sample ))
+
+COX_DIA_IGHV_PG5_res <- enframe(COX_DIA_IGHV_PG5$coefficients[, 5], name = "parameter", value = "p") %>%
+  mutate(parameter = str_remove(parameter, "TRUE") )
+COX_DIA_IGHV_PG5_res$HR <- COX_DIA_IGHV_PG5$coefficients[, 2]
+COX_DIA_IGHV_PG5_res$lower_CI <- COX_DIA_IGHV_PG5$conf.int[ ,"lower .95"] 
+COX_DIA_IGHV_PG5_res$upper_CI <- COX_DIA_IGHV_PG5$conf.int[ ,"upper .95"]
+
+
+COX_DIA_IGHV_PG5_plot <- 
+  COX_DIA_IGHV_PG5_res %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" ),
+         parameter= as.factor(parameter)) %>%
+  mutate( lower_CI = if_else(lower_CI < 0.05, 0.05, lower_CI ),
+          upper_CI = if_else(upper_CI > 12.5, 12.5, upper_CI),
+          parameter = factor(parameter, levels = c( "IGHV:PG5", "IGHV", "PG5"))) %>%
+  ggplot(aes( parameter, HR )) +
+  geom_point(aes(color= interaction(sig, parameter) ) ) +
+  geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= interaction(sig, parameter) )) +
+  scale_color_manual(values = c("black", "#0571b0", colors_CCP[5])) +
+  pp_sra +
+  coord_flip(ylim =c(0.1,10)) +
+  geom_hline(yintercept = 1, linetype= "dashed") +
+  scale_y_log10() +
+  theme(axis.title.y = element_blank()) +
+  ggtitle("Independance of PG5 and IGHV")
+
+COX_DIA_IGHV_PG5_plot +
+            annotate(geom = "segment", y= 0.05, yend = 12.5, x = "IGHV:PG5", 
+           xend="IGHV:PG5", 
+           arrow= arrow(length = unit(7, "pt"),
+                        ends = "both",  type = "closed"))
+```
+
+###### TP53 plot
+```{r}
+COX_DIA_TP53_PG5 <- summary(coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_DIA_OS_sample ))
+
+COX_DIA_TP53_PG5_res <- enframe(COX_DIA_TP53_PG5$coefficients[, 5], name = "parameter", value = "p") %>%
+  mutate(parameter = str_remove(parameter, "TRUE") )
+COX_DIA_TP53_PG5_res$HR <- COX_DIA_TP53_PG5$coefficients[, 2]
+COX_DIA_TP53_PG5_res$lower_CI <- COX_DIA_TP53_PG5$conf.int[ ,"lower .95"] 
+COX_DIA_TP53_PG5_res$upper_CI <- COX_DIA_TP53_PG5$conf.int[ ,"upper .95"]
+
+
+COX_DIA_TP53_PG5_plot <- 
+  COX_DIA_TP53_PG5_res %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" ),
+         parameter = as.factor(parameter)) %>%
+  mutate( lower_CI = if_else(lower_CI < 0.05, 0.05, lower_CI ),
+          upper_CI = if_else(upper_CI > 12.5, 12.5, upper_CI),
+          parameter = factor(parameter, levels = c("TP53:PG5", "TP53", "PG5"))) %>%
+  ggplot(aes( parameter, HR )) +
+  geom_point(aes(color= interaction(sig, parameter) ) ) +
+  geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= interaction(sig, parameter) )) +
+  scale_color_manual(values = c("black", "#0571b0", colors_CCP[5])) +
+  pp_sra +
+  coord_flip(ylim = c(0.1,10)) +
+  geom_hline(yintercept = 1, linetype= "dashed") +
+  scale_y_log10() +
+  theme(axis.title.y = element_blank())+
+  ggtitle("Independance of PG5 and TP53")
+COX_DIA_TP53_PG5_plot +
+            annotate(geom = "segment", y= 0.05, yend = 3.14, x = "TP53:PG5", 
+           xend="TP53:PG5", 
+           arrow= arrow(length = unit(7, "pt"),
+                        ends = "first",  type = "closed"))
+```
+
+###### TP53 and del17p plot
+```{r}
+metaData_TP53_del17p_DIA_OS_sample <- metaData_DIA_OS_sample %>%
+  mutate("TP53/del(17)(p13)"= if_else( TP53== 1 | del17p13 == 1, 1, as.numeric(NA) ) ) %>%
+  mutate("TP53/del(17)(p13)"= if_else( TP53== 0 & del17p13 == 0, 0, `TP53/del(17)(p13)` ) ) %>%
+  mutate("TP53/del(17)(p13)"= if_else( TP53== 0 & is.na(del17p13), 0, `TP53/del(17)(p13)` ) ) %>%
+  mutate("TP53/del(17)(p13)"= if_else( is.na(TP53) & del17p13 == 0, 0, `TP53/del(17)(p13)` ) ) %>% 
+  mutate(TP53 = `TP53/del(17)(p13)`)
+
+COX_DIA_TP53_del17_PG5 <- summary(coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_TP53_del17p_DIA_OS_sample ))
+
+COX_DIA_TP53_del17_PG5_res <- enframe(COX_DIA_TP53_del17_PG5$coefficients[, 5], name = "parameter", value = "p") %>%
+  mutate(parameter = str_remove(parameter, "TRUE") )
+COX_DIA_TP53_del17_PG5_res$HR <- COX_DIA_TP53_del17_PG5$coefficients[, 2]
+COX_DIA_TP53_del17_PG5_res$lower_CI <- COX_DIA_TP53_del17_PG5$conf.int[ ,"lower .95"] 
+COX_DIA_TP53_del17_PG5_res$upper_CI <- COX_DIA_TP53_del17_PG5$conf.int[ ,"upper .95"]
+
+
+COX_DIA_TP53_del17_PG5_plot <- 
+  COX_DIA_TP53_del17_PG5_res %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" ),
+         parameter = as.factor(parameter)) %>%
+  mutate( lower_CI = if_else(lower_CI < 0.05, 0.05, lower_CI ),
+          upper_CI = if_else(upper_CI > 12.5, 12.5, upper_CI),
+          parameter = factor(parameter, levels = c("TP53:PG5", "TP53", "PG5"))) %>%
+  ggplot(aes( parameter, HR )) +
+  geom_point(aes(color= interaction(sig, parameter) ) ) +
+  geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= interaction(sig, parameter) )) +
+  scale_color_manual(values = c("black", "#0571b0", colors_CCP[5])) +
+  pp_sra +
+  coord_flip(ylim = c(0.1,10)) +
+  geom_hline(yintercept = 1, linetype= "dashed") +
+  scale_y_log10() +
+  theme(axis.title.y = element_blank())+
+  ggtitle("Independance of PG5 and TP53/del(17)(p13)")
+COX_DIA_TP53_del17_PG5_plot +
+            annotate(geom = "segment", y= 0.05, yend = 3.14, x = "TP53:PG5", 
+           xend="TP53:PG5", 
+           arrow= arrow(length = unit(7, "pt"),
+                        ends = "first",  type = "closed"))
+```
+
+
+### OS DIA and HiRIEF combined
+```{r}
+coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_DIA_OS_sample )
+```
+
+# Save important plots
+```{r save image, cache=FALSE}
+save(COX_DIA_TP53_PG5_plot,
+     COX_DIA_IGHV_PG5_plot,
+     COX_DIA_TP53_del17_PG5_plot,
+     file = "Robjects/DIA_Proteomics_PG5_COX_Plots.RData")
+```
+
+# Session Info
+```{r message=FALSE, warning=FALSE}
+sessionInfo()
+```
+

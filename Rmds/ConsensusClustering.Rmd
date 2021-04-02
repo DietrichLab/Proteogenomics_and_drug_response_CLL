@@ -102,18 +102,31 @@ cor_h_prot[cor_h_prot==1] <- NA
 ann_cols <- fivecl_pat[,c(4:13)] %>% mutate_all(as.character)
 rownames(ann_cols) <- rownames(fivecl_pat[,c(4:13)])
 
-ann_colors = list(
-  PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= colors_CCP[5], "6"= colors_CCP[6] ),
-    SNPs_ATM = c(`0`="#ffd6dd", "1"="#ca0020"),
-    SNPs_SF3B1= c(`0`="#ffd6dd", `1`="#ca0020"),
-    SNPs_TP53 = c(`0` = "#ffd6dd", `1` = "#ca0020"),
-    chrom_abber_del11q = c(`0` = "#ffefd1", `1` = "#FFA500"),
-   chrom_abber_del13q14 = c(`0` = "#ffefd1", `1` = "#FFA500"),
-   chrom_abber_del17p13 = c(`0` = "#ffefd1", `1` = "#FFA500"),
-   chrom_abber_trisomy12 = c(`0` = "#ffefd1", `1` = "#FFA500"),
-   health_record_bin_IGHV_mutated = c(`0` = "#d4efff", `1` = "#0571b0"),
-    treated=c(`1`= "gray40", `0`= "gray80" )
-)
+#ann_colors = list(
+#  PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= #colors_CCP[5], "6"= colors_CCP[6] ),
+#    SNPs_ATM = c(`0`="#ffd6dd", "1"="#ca0020"),
+#    SNPs_SF3B1= c(`0`="#ffd6dd", `1`="#ca0020"),
+#    SNPs_TP53 = c(`0` = "#ffd6dd", `1` = "#ca0020"),
+#    chrom_abber_del11q = c(`0` = "#ffefd1", `1` = "#FFA500"),
+#   chrom_abber_del13q14 = c(`0` = "#ffefd1", `1` = "#FFA500"),
+#   chrom_abber_del17p13 = c(`0` = "#ffefd1", `1` = "#FFA500"),
+#   chrom_abber_trisomy12 = c(`0` = "#ffefd1", `1` = "#FFA500"),
+#   health_record_bin_IGHV_mutated = c(`0` = "#d4efff", `1` = "#0571b0"),
+#    treated=c(`1`= "gray40", `0`= "gray80" )
+#)
+
+#ann_colors_grey = list(
+#  PG=c("1"= colors_CCP[1], "2"= colors_CCP[2], "3"= colors_CCP[3], "4"= colors_CCP[4], "5"= #colors_CCP[5], "6"= colors_CCP[6] ),
+#    SNPs_ATM = c(`0`="gray40", "1"="gray80"),
+#    SNPs_SF3B1= c(`0`="gray40", `1`="gray80"),
+#    SNPs_TP53 = c(`0` = "gray40", `1` = "gray80"),
+#    chrom_abber_del11q = c(`0` = "gray40", `1` = "gray80"),
+#   chrom_abber_del13q14 = c(`0` = "gray40", `1` = "gray80"),
+#   chrom_abber_del17p13 = c(`0` = "gray40", `1` = "gray80"),
+#   chrom_abber_trisomy12 = c(`0` = "gray40", `1` = "gray80"),
+#   health_record_bin_IGHV_mutated = c(`0` = "gray40", `1` = "gray80"),
+#    treated=c(`1`= "gray40", `0`= "gray80" )
+#)
 
 colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
 
@@ -157,7 +170,9 @@ CCP_Groups_Heatmap_plot <-
          panel.grid = element_blank(), panel.background = element_blank(), axis.title.y = element_blank(),
          strip.background = element_rect(colour = "black", fill="white") ) +
   scale_fill_manual(na.value = "white", 
-                    values=c(colors_CCP,"#FFA500","#0571b0", "#d4efff", "#ffefd1", "#ffd6dd" , "#ca0020",  
+                    values=c(colors_CCP,
+                             #"#FFA500","#0571b0", "#d4efff", "#ffefd1", "#ffd6dd" , "#ca0020",  
+                             "gray40", "grey40", "gray80", "grey80", "gray80", "grey40",
                              "gray40", "grey80")) +
   xlab(element_blank()) + facet_grid(~PG, scales = "free", space = "free_x") 
 
@@ -397,6 +412,19 @@ CUL3_CCP5_P_plot + theme(aspect.ratio=1) +
   stat_compare_means( hjust=0) +
   ggtitle("CUL3 protein abundance") 
 
+longFormat(multiomics_MAE["RBX1",,"proteomics"], colDataCols = "PG") %>% 
+  as_tibble() %>% filter(!is.na(PG)) %>% 
+  ggplot(aes(PG==5, value, group=PG==5, fill=PG==5)) + 
+  geom_boxplot() + geom_beeswarm() + 
+  pp_sra +
+  xlab("PG5") +
+  ylab("Protein abundance RBX1")+
+  guides(fill=guide_legend(title="PG5"))+
+  scale_fill_manual(values = c("grey", colors_CCP[5]))+
+  theme(aspect.ratio=1) +
+  stat_compare_means( hjust=0) +
+  ggtitle("RBX1 protein abundance") 
+
 SF3B1_CCP_P_plot <- longFormat(multiomics_MAE["SF3B1",,"proteomics"], colDataCols = "PG") %>% 
   as_tibble() %>% filter(!is.na(PG)) %>% 
   ggplot(aes(PG==5, value, group=PG==5, fill=PG==5)) + 
@@ -519,7 +547,8 @@ flow_CCP_plot <-
         axis.text.y = element_blank(), axis.ticks = element_blank(), axis.line.x = element_blank(),
         panel.border = element_blank()) 
 
-flow_CCP_plot + geom_text(stat = "stratum", label.strata = TRUE)
+#flow_CCP_plot + geom_text(stat = "stratum", label.strata = TRUE)
+flow_CCP_plot + geom_text(stat = "stratum", aes(label = after_stat(stratum)))
 ```
 
 # Save objects and plots from this script which are needed again later

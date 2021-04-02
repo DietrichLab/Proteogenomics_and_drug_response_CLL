@@ -1,0 +1,332 @@
+---
+title: "TTFT Trisomy12 and IGHV"
+author: "Sophie Herbst & Mattias Vesterlund"
+output:
+  BiocStyle::html_document:
+    self_contained: true
+    code_download: true
+    code_folding: hide
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+
+# Setup
+## Load libraries
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(limma)
+library(ggbeeswarm)
+library(ggpubr)
+library(readxl)
+library(glmnet)
+library(survival)
+library(survminer)
+require(switchBox)
+require(gridExtra)
+library(caret)
+library(MLmetrics)
+library(caret)
+library(MLmetrics)
+select <- dplyr::select
+
+set.seed(2020)
+```
+
+## Load data
+```{r, warning=FALSE, message=FALSE}
+source("Data/Figure_layouts.R") 
+DIA <- readRDS("Robjects/DIA2_alldata.RData")
+load("Data/CLL_Proteomics_Setup.RData")
+load("Data/multiomics_MAE.RData")
+load("Data/CLL_Proteomics_ConsensusClustering.RData")
+```
+
+## Format data
+```{r, warning=FALSE}
+meta_Germany <- read_excel("Data/20200721_Patient_Annotation_health_records_pseud.xlsx",
+  col_types = c( rep("text", 6), "skip", "text", rep("numeric", 7),  rep("skip", 4), "text", "date", "text",
+                rep("date", 4), rep("text", 4), "date", "numeric", "date", "skip",
+                "skip", "skip", "skip")
+  )
+
+patient_lookup_germany <- read_delim("Data/Patient_Lookup_IDs.txt", delim = "\t")
+
+meta_Germany <- left_join(meta_Germany, patient_lookup_germany %>% select(-patient_ID_OMZ_first), by= c( "OMZ_Pat_ID", "NCT_Pat_ID"  ) )
+
+meta_Germany$PG <- as.factor(CCP_group5[meta_Germany$patient_ID_CLL])
+
+meta_HiRIEF <- meta_Germany %>%
+  filter(!is.na(PG), diagnosis == "CLL") %>%
+  select(patient_ID_CLL, PG, sampleDate, date_follow_up, alive, date_death, treatment_status )
+
+meta_HiRIEF <- meta_HiRIEF %>%
+  mutate(
+    OS = difftime( date_death, sampleDate, units = "weeks" ),
+    ObsTime_OS = if_else( alive == 0, OS ,
+           difftime( date_follow_up, sampleDate, units = "weeks" ) ) )
+```
+
+### Prepare TTT data frame
+```{r}
+df_TTT <- DIA %>% 
+  filter(grepl("Germany", cohort ) ) %>%
+  select(Sample:ID, Pat_ID, date_next_treatment, date_death, alive, sampleDate, date_follow_up, cohort, treatment_at_collection) %>%
+  unique %>%
+  # Remove without any follow up or patients who were collected during treatment
+  filter(is.na(treatment_at_collection) | treatment_at_collection!="intreatment") %>%
+  mutate(TTT = difftime(date_next_treatment, sampleDate, units = "weeks"),
+         ObsTime_TTT = if_else(alive==0, difftime(date_death,  sampleDate, units = "weeks"),
+                                      difftime(date_follow_up, sampleDate, units = "weeks" )) ,
+         received_next_treatment = if_else(is.na(TTT ), 0, 1 )) 
+
+
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_TTT <- 
+  df_TTT %>% 
+  mutate(time = ifelse(received_next_treatment ==  0, ObsTime_TTT, 
+                       if_else(received_next_treatment ==  1, TTT, as.difftime("NA")) ), 
+         status = ifelse(received_next_treatment == 0, 1, 
+                         if_else(received_next_treatment ==  1, 2, as.double(NA) ) ) )
+
+
+```
+
+### Prepare OS data frame from diagnosis
+```{r}
+df_OS <- DIA %>% 
+  select(Sample:ID, Pat_ID, alive, sampleDate, cohort, OS, ObsTime_OS) %>%
+  unique 
+
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_OS <- 
+  df_OS %>% 
+  mutate(time = ifelse(alive ==  0, OS , 
+                       if_else(alive ==  1, ObsTime_OS, as.difftime("NA")) ), 
+         status = ifelse(alive == 1, 1, 
+                         if_else(alive ==  0, 2, as.double(NA) ) ) )
+```
+
+### Prepare OS data frame from sample date
+```{r}
+df_OS_sampleDate <- DIA %>% 
+  select(Sample:ID, Pat_ID, alive, sampleDate, cohort, OS = OS_since_sample, ObsTime_OS = ObsTime_OS_since_sample) %>%
+  unique 
+
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_OS_sampleDate <- 
+  df_OS_sampleDate %>% 
+  mutate(time = ifelse(alive ==  0, OS , 
+                       if_else(alive ==  1, ObsTime_OS, as.difftime("NA")) ), 
+         status = ifelse(alive == 1, 1, 
+                         if_else(alive ==  0, 2, as.double(NA) ) ) )
+```
+
+### Prepare TTFT data frame
+```{r}
+df_TTFT <- DIA %>% 
+  select(Sample:ID, Pat_ID, TTFT, ObsTime_TTFT, cohort, treatment_status, treatment_at_collection) %>%
+  unique
+
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+df_TTFT <- 
+  df_TTFT %>% 
+  mutate(time = ifelse(treatment_status ==  0, ObsTime_TTFT, 
+                       if_else(treatment_status ==  1, TTFT, as.difftime("NA")) ), 
+         status = ifelse(treatment_status == 0, 1, 
+                         if_else(treatment_status ==  1, 2, as.double(NA) ) ) )
+
+# Remove without any follow up or patients who were collected during treatment
+df_TTFT <- filter(df_TTFT, ObsTime_TTFT!=0) %>% 
+  filter(is.na(treatment_at_collection) | treatment_at_collection!="intreatment")
+```
+
+
+# Analysis
+## Time to first treatment
+```{r TTFT}
+TTFT_tris_IGHV <- left_join(
+  DIA %>% 
+    select(Sample, IGHV_mutated, trisomy12, cohort) %>% 
+    unique,
+  df_TTFT,
+  by=c("Sample", "cohort"))
+
+df_TTFT_surv <- TTFT_tris_IGHV %>%
+    filter(!cohort %in% c("Germany_1") ) %>%
+    filter( !is.na(time), !is.na( status), !is.na(IGHV_mutated), !is.na(trisomy12) ) %>% 
+    select(Sample,time, status, IGHV_mutated, trisomy12) %>%
+    mutate( IGHV_str = if_else(IGHV_mutated == 1, "M-CLL",
+                              if_else(IGHV_mutated == 0, "U-CLL", "NA") ),
+            tris12_str = if_else(trisomy12 == 1, " & trisomy 12",
+                                if_else(trisomy12 == 0, "", "NA"))) %>%
+    mutate(IGHV_trisomy12 = paste0(IGHV_str, tris12_str) ) %>%
+    unique() %>%
+    dplyr::select(time, status, Factor = IGHV_trisomy12) %>%
+    mutate(BinFactor = Factor)
+
+df_TTFT_surv$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_TTFT_surv$time <- df_TTFT_surv$time/52.1428571
+  
+survfit_TTFT <- survfit(Surv(time, status) ~ BinFactor, data = df_TTFT_surv)
+pp_sra_TTFT <- pp_sra
+pp_sra_TTFT[[2]]$aspect.ratio <- 1
+pp_sra_TTFT[[2]]$text <- element_text(size=15)
+ggsurvplot(survfit_TTFT, data = df_TTFT_surv, 
+                 xlab = "Time in years",
+                 palette = c( colors_CCP[c(3, 1 ,4,2)]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_TTFT$strata) ),
+                 legend.title = "",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = FALSE
+                 ) + ggtitle("TTFT, IGHV and trisomy12")
+
+tris12_IGHV_TTFT_survplot <- ggsurvplot(survfit_TTFT, data = df_TTFT_surv, 
+                 xlab = "Time in years",
+                 palette = c( colors_CCP[c(3, 1 ,4,2)]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_TTFT$strata) ),
+                 legend.title = "",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = FALSE,
+                 pval.method = FALSE,
+                 conf.int = FALSE
+                 )
+
+```
+
+### Only U-CLL
+```{r TTFT_U}
+TTFT_U_tris_IGHV <- left_join(
+  DIA %>% 
+    select(Sample, IGHV_mutated, trisomy12, cohort) %>% 
+    unique,
+  df_TTFT,
+  by=c("Sample", "cohort"))
+
+df_TTFT_U_surv <- TTFT_U_tris_IGHV %>%
+    filter(!cohort %in% c("Germany_1"), IGHV_mutated==0 ) %>%
+    filter( !is.na(time), !is.na( status), !is.na(IGHV_mutated), !is.na(trisomy12) ) %>% 
+    select(Sample,time, status, IGHV_mutated, trisomy12) %>%
+    mutate(IGHV.tris = interaction(IGHV_mutated, trisomy12)) %>%
+    unique() %>%
+    dplyr::select(time, status, Factor = IGHV.tris) %>%
+    mutate(BinFactor = Factor)
+
+df_TTFT_U_surv$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_TTFT_U_surv$time <- df_TTFT_U_surv$time/52.1428571
+  
+survfit_TTFT_U <- survfit(Surv(time, status) ~ BinFactor, data = df_TTFT_U_surv)
+pp_sra_TTFT_U <- pp_sra
+pp_sra_TTFT_U[[2]]$aspect.ratio <- 1
+pp_sra_TTFT_U[[2]]$text <- element_text(size=15)
+TTFT_U_survplot <- ggsurvplot(survfit_TTFT_U, data = df_TTFT_U_surv, 
+                 xlab = "Time in years",
+                 palette = c( colors_CCP[c(4,2)]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_TTFT_U$strata) ),
+                 legend.title = "IGHV.trisomy12",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = FALSE
+                 ) 
+
+TTFT_U_survplot + ggtitle("TTFT U-CLL, IGHV and trisomy12")
+
+```
+
+### Only M-CLL
+```{r TTFT_M}
+TTFT_M_tris_IGHV <- left_join(
+  DIA %>% 
+    select(Sample, IGHV_mutated, trisomy12, cohort) %>% 
+    unique,
+  df_TTFT,
+  by=c("Sample", "cohort"))
+
+df_TTFT_M_surv <- TTFT_M_tris_IGHV %>%
+    filter(!cohort %in% c("Germany_1"), IGHV_mutated==1 ) %>%
+    filter( !is.na(time), !is.na( status), !is.na(IGHV_mutated), !is.na(trisomy12) ) %>% 
+    select(Sample,time, status, IGHV_mutated, trisomy12) %>%
+    mutate(IGHV.tris = interaction(IGHV_mutated, trisomy12)) %>%
+    unique() %>%
+    dplyr::select(time, status, Factor = IGHV.tris) %>%
+    mutate(BinFactor = Factor)
+
+df_TTFT_M_surv$Factor %>% table
+  
+formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
+  
+# Years instead of months
+df_TTFT_M_surv$time <- df_TTFT_M_surv$time/52.1428571
+  
+survfit_TTFT_M <- survfit(Surv(time, status) ~ BinFactor, data = df_TTFT_M_surv)
+pp_sra_TTFT_M <- pp_sra
+pp_sra_TTFT_M[[2]]$aspect.ratio <- 1
+pp_sra_TTFT_M[[2]]$text <- element_text(size=15)
+TTFT_M_survplot <- ggsurvplot(survfit_TTFT_M, data = df_TTFT_M_surv, 
+                 xlab = "Time in years",
+                 palette = c( colors_CCP[c( 3 ,1)]) ,
+                 legend.labs = gsub("BinFactor=", "", names(survfit_TTFT_M$strata) ),
+                 legend.title = "IGHV.trisomy12",
+                 legend = "right",
+                 ggtheme = pp_sra,
+                 #xlim=c(0,7),
+                 ylab="Treatment free survival",
+                 pval = TRUE,
+                 pval.method = TRUE,
+                 conf.int = FALSE
+                 ) 
+
+TTFT_M_survplot + ggtitle("TTFT M-CLL, IGHV and trisomy12")
+
+```
+
+# Conclusion
+M-CLL trisomy 12 patients have shorter TTFT than M-CLL patients without trisomy 12
+
+# Save important objects
+```{r}
+```
+
+# Save important plots
+```{r}
+save(tris12_IGHV_TTFT_survplot,
+     file = "Robjects/TTFT_IGHV_tris12_plot.RData")
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```
+
+```{r knitr exit}
+knitr::knit_exit()
+```
+

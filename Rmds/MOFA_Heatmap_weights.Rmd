@@ -1,0 +1,376 @@
+---
+title: "Weights latent factors MOFA HiRIEF"
+author: "Sophie Herbst"
+output:
+  BiocStyle::html_document:
+    self_contained: true
+    code_download: true
+    code_folding: hide
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+options(digits=3, width=80)
+opts_chunk$set( fig.small=FALSE)
+```
+
+# Setup
+## Load libraries
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(RColorBrewer)
+library(survival)
+library(maxstat)
+library(survminer)
+library(MultiAssayExperiment)
+library(colorspace)
+select <- dplyr::select
+```
+
+## Load data
+```{r}
+load("/Volumes/sd17b003/Sophie/Eva/Master_thesis/data/MOFA_models/proteomics_model_noDrug_weights.RData")
+source("/Users/sophierabe/Desktop/PhD/Bioinfo/Proteomics/CLL/dia_proteomics_validation/Data/Figure_layouts.R") 
+
+# Load HiRIEF
+load("/Users/sophierabe/Desktop/PhD/Bioinfo/Proteomics/CLL/dia_proteomics_validation/Data/multiomics_MAE.RData")
+
+load("/Users/sophierabe/Desktop/PhD/Bioinfo/Proteomics/CLL/dia_proteomics_validation/Data/CLL_Proteomics_ConsensusClustering.RData")
+colData(multiomics_MAE)$PG <- as.factor(CCP_group5[rownames(colData(multiomics_MAE))])
+
+DIA <- readRDS("/Users/sophierabe/Desktop/PhD/Bioinfo/Proteomics/CLL/dia_proteomics_validation/Robjects/DIA2_alldata.RData")
+load("/Users/sophierabe/Desktop/PhD/Bioinfo/Proteomics/CLL/dia_proteomics_validation/Robjects/pred_DIA_PG5.RData")
+```
+
+# Analysis
+## Top loadings
+```{r}
+names(proteomics_model_noDrug_weights)
+
+top10_LF1_prot <- names(sort(abs(proteomics_model_noDrug_weights$proteomics[, "LF1"]), decreasing = TRUE )[1:10])
+top10_LF2_prot <- names(sort(abs(proteomics_model_noDrug_weights$proteomics[, "LF2"]), decreasing = TRUE )[1:10])
+top10_LF9_prot <- names(sort(abs(proteomics_model_noDrug_weights$proteomics[, "LF9"]), decreasing = TRUE )[1:10])
+
+top10_LF1_RNA <- names(sort(abs(proteomics_model_noDrug_weights$RNAseq_norm[, "LF1"]), decreasing = TRUE )[1:10])
+top10_LF2_RNA <- names(sort(abs(proteomics_model_noDrug_weights$RNAseq_norm[, "LF2"]), decreasing = TRUE )[1:10])
+
+top10_LF1_gen <- names(sort(abs(proteomics_model_noDrug_weights$genetics[, "LF1"]), decreasing = TRUE )[1:2])
+top10_LF2_gen <- names(sort(abs(proteomics_model_noDrug_weights$genetics[, "LF2"]), decreasing = TRUE )[1:2])
+```
+
+## Plot heatmap
+### Extract weight for all of these
+```{r}
+all_symbols <- c(  top10_LF1_prot, top10_LF2_prot, top10_LF9_prot,
+  top10_LF1_RNA, top10_LF2_RNA,
+  top10_LF1_gen, top10_LF2_gen)
+
+prot_symbols <- subset(all_symbols, all_symbols %in% rownames(proteomics_model_noDrug_weights$proteomics) ) %>% 
+  unique
+RNA_symbols <- subset(all_symbols, all_symbols %in% rownames(proteomics_model_noDrug_weights$RNAseq_norm) ) %>% 
+  unique
+DNA_symbols <- subset(all_symbols, all_symbols %in% rownames(proteomics_model_noDrug_weights$genetics) ) %>% 
+  unique
+
+weights_LFs_sel <-  bind_rows(
+proteomics_model_noDrug_weights$proteomics[prot_symbols, c("LF1", "LF2", "LF9")] %>%
+  as.data.frame() %>%
+  rownames_to_column(., var="symbol") %>%
+  mutate(omic="proteomics"),
+
+proteomics_model_noDrug_weights$RNAseq_norm[RNA_symbols, c("LF1", "LF2", "LF9")] %>%
+  as.data.frame() %>%
+  rownames_to_column(., var="symbol") %>%
+  mutate(omic="transcriptomics*10", LF1 = LF1*10, LF2 = LF2*10, LF9 = LF9*10),
+
+proteomics_model_noDrug_weights$genetics[DNA_symbols, c("LF1", "LF2", "LF9")] %>%
+  as.data.frame() %>%
+  rownames_to_column(., var="symbol") %>%
+  mutate(omic="genetics/2" , LF1 = LF1/2, LF2 = LF2/2, LF9 = LF9/2) )
+
+weights_LFs_sel <- weights_LFs_sel %>%
+  as_tibble() %>%
+  pivot_longer(LF1:LF9, names_to = "LFs", values_to = "weights")
+```
+
+### Plot
+```{r}
+order_symbols <- weights_LFs_sel %>% 
+  mutate(symbol = if_else(symbol == "IGHV_mutated", "IGHV", symbol )) %>%
+  filter(!is.na(weights)) %>%
+  group_by(symbol) %>%
+  arrange(omic, desc(abs(weights) )) %>%
+  dplyr::slice(1) %>%
+  ungroup() %>%
+  arrange(omic, LFs, weights  ) %>%
+  .$symbol %>% rev
+
+order_symbols <- order_symbols[c(1:(which(order_symbols == "TBC1D9")-1), 
+              (which(order_symbols == "TBC1D9")+1):which(order_symbols == "SPN"), 
+              which(order_symbols == "TBC1D9"),
+              (which(order_symbols == "SPN")+1):length(order_symbols))
+              ]
+
+plot_MOFA_weights_heatmap <- 
+  weights_LFs_sel %>%
+  mutate(symbol = if_else(symbol == "IGHV_mutated", "IGHV", symbol )) %>%
+  filter(!is.na(weights)) %>%
+  mutate(symbol = as.factor(symbol)) %>%
+  mutate(symbol = factor(symbol, levels = order_symbols)) %>%
+  ggplot(aes( omic, symbol, fill = weights )) +
+  geom_tile(color="black") +
+  facet_grid(~LFs) +
+  geom_hline(yintercept = 41.5, color="grey20", size=1) +
+  geom_hline(yintercept = 24.5,  size=0.5, color="grey40") +
+  geom_hline(yintercept = 10.5,  size=0.5, color= "grey40") +
+  pp_sra +
+  scale_fill_continuous_divergingx(palette = 'RdBu', mid = 0) +
+  theme(axis.text.x = element_text(angle = 90), axis.title = element_blank(),
+        panel.background = element_rect(fill = "grey90") ) 
+
+plot_MOFA_weights_heatmap
+```
+
+## Cox analysis of loaded proteins/genes
+### Define function
+```{r}
+Extract.Cox <- function(x)
+        { 
+        x <- summary(x)
+        p.value<-signif(x$coefficients[1, 5], digits=2)
+        beta<-signif(x$coefficients[1, 1], digits=2);#coeficient beta
+        HR <-signif(x$coefficients[1, 2], digits=2);#exp(beta)
+        wald.test<-signif(x$waldtest["test"], digits=2)
+        HR.confint.lower <- signif(x$conf.int[1 ,"lower .95"], 2)
+        HR.confint.upper <- signif(x$conf.int[1 ,"upper .95"], 2)
+        HR <- paste0(HR, " (", 
+                     HR.confint.lower, "-", HR.confint.upper, ")")
+        res<-c(beta, HR, wald.test, p.value)
+        names(res)<-c("beta", "HR (95% CI for HR)", "wald.test", 
+                      "p.value")
+        return(res)
+        }
+```
+
+### Format data
+#### HiRIEF
+```{r message=FALSE, warning=FALSE}
+metaData_HiRIEF <- as.data.frame(colData(multiomics_MAE))
+
+# Set 'time' either to observation time (w/o next treatment) or to actual time to next treatment
+# Status: 1 for patients w/o next treatment ('censored'), 2 for patients who actually recieved treatment
+metaData_HiRIEF <- metaData_HiRIEF %>% 
+  dplyr::rename(TTNT = timeDiff_TTNT_orig) %>%
+  mutate(time = ifelse(is.na(TTNT), ObsTime, TTNT), 
+         status = ifelse(is.na(TTNT), 1, 2))
+
+# Remove without any follow up
+metaData_HiRIEF <- filter(metaData_HiRIEF, ObsTime!=0) %>% filter(!treatment_status=="intreatment")
+
+df_meta_prot_HiRIEF <- left_join(metaData_HiRIEF %>% select(-IGHV),
+          wideFormat(multiomics_MAE[c("IGHV_mutated", weights_LFs_sel %>% filter(omic != "genetics/2") %>%
+                                                      .$symbol), , c("proteomics", "health_record_bin") ]) %>%
+            as_tibble() %>%
+            mutate(IGHV = health_record_bin_IGHV_mutated), 
+          by=c("patient_ID"= "primary") )
+
+```
+
+#### DIA
+```{r}
+metaData_DIA <- DIA %>%
+  filter(!treatment_status=="intreatment", !cohort %in% c( "High_risk" , "Germany_1") ) %>%
+  select( Sample, cohort, Pat_ID, TP53:IGHV_mutated, 
+          ObsTime_OS, ObsTime_OS_since_sample, ObsTime_TTT, 
+          alive, treatment_status, treatment_at_collection) %>%
+  unique  %>%
+  mutate( IGHV = IGHV_mutated, treated_at_collection = if_else(treatment_at_collection == "pretreated", TRUE,
+                                                               if_else(treatment_at_collection == "untreated", FALSE, as.logical(NA)  )))
+metaData_DIA <- left_join(metaData_DIA, 
+                          pred_DIA_PG5 %>% 
+                            transmute(Sample, PG5 = PG5_predicted_ktsp))
+
+metaData_DIA_TTNT <- metaData_DIA %>%
+  filter(!is.na( ObsTime_TTT ), !is.na(treatment_status)) %>%
+  mutate(time = ObsTime_TTT, 
+         status = ifelse(treatment_status ==0, 1, 2))
+
+metaData_DIA_OS_sample <- metaData_DIA %>%
+  filter(!is.na( ObsTime_OS_since_sample ), !is.na(alive)) %>%
+  mutate(time = ObsTime_OS_since_sample, 
+         status = ifelse(alive ==1, 1, 2))
+
+metaData_DIA_OS_diag <- metaData_DIA %>%
+  filter(!is.na( ObsTime_OS ), !is.na(alive)) %>%
+  mutate(time = ObsTime_OS, 
+         status = ifelse(alive ==1, 1, 2))
+
+
+df_meta_prot_DIA_OS_sample <- left_join(metaData_DIA_OS_sample,
+          (DIA %>%
+            filter(!treatment_status=="intreatment", 
+                   !cohort %in% c( "High_risk" , "Germany_1"),
+                   PG.ProteinGroups %in% (weights_LFs_sel %>% filter(omic != "genetics/2") %>%
+                                                      .$symbol) ) %>%
+            select( PG.ProteinGroups, Sample, log.norm.MS2Quantity ) %>%
+            pivot_wider( names_from = PG.ProteinGroups, values_from = log.norm.MS2Quantity ) ), 
+          by=c("Sample") )
+```
+
+### Perform Cox regression
+#### HiRIEF
+```{r}
+weights_LFs_sel %>%
+  filter(omic == "genetics/2") %>%
+  .$symbol %>% unique
+
+all_proteins_with_weights <- weights_LFs_sel %>%
+  filter(omic != "genetics/2") %>%
+  .$symbol %>% unique
+
+all_proteins_with_weights <- paste0("proteomics_", all_proteins_with_weights)
+
+results_weights_HR_HiRIEF <- sapply(c("IGHV", "trisomy12", all_proteins_with_weights), function(p){
+new_formula <- as.formula(paste0( "Surv(time, status) ~ ", p  ))
+Extract.Cox( coxph(new_formula, 
+      data = df_meta_prot_HiRIEF) )
+}) %>% t %>%
+  as.data.frame() %>%
+  rownames_to_column("symbol") %>%
+  mutate(symbol = str_remove(symbol, "proteomics_"))
+
+LF_weights_HR_HiRIEF_plot <- 
+  results_weights_HR_HiRIEF %>%
+  separate(col = `HR (95% CI for HR)`, into = c("HR", "CI"), sep = "\\(" ) %>%
+  mutate(CI = gsub(")", "", CI )) %>%
+  separate(CI, into = c("lower_CI", "upper_CI"), sep = "-" ) %>%
+  mutate("Hazard ratio" = as.numeric(HR), lower_CI =  as.numeric(lower_CI), 
+         upper_CI= as.numeric(upper_CI),
+         symbol = as.factor(symbol)) %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" ),
+         symbol = factor(symbol, levels =  order_symbols )) %>% 
+  ggplot(aes( `symbol`, `Hazard ratio` )) +
+  geom_point(aes(color= sig)) +
+  geom_vline(xintercept = 41.5, color="grey40", size=1) +
+  geom_vline(xintercept = 24.5,  size=0.5, color="grey60") +
+  geom_vline(xintercept = 10.5,  size=0.5, color= "grey60") +
+  geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= sig)) +
+  scale_color_manual(values = c("black", "blue")) +
+  pp_sra +
+  coord_flip(ylim = c(0.05, 20)) +
+  #coord_flip(ylim = c(0, 10)) +
+  geom_hline(yintercept = 1, linetype= "dashed") +
+  scale_y_log10()
+
+LF_weights_HR_HiRIEF_plot +
+  geom_text(y= 1.2, aes(label= p.value, color= sig )) +
+  theme(legend.position = 'none', axis.title.y = element_blank())
+```
+
+#### DIA
+```{r}
+weights_LFs_sel %>%
+  filter(omic == "genetics/2") %>%
+  .$symbol %>% unique
+
+all_proteins_with_weights_DIA <- weights_LFs_sel %>%
+  filter(omic != "genetics/2") %>%
+  .$symbol %>% unique
+
+all_proteins_with_weights_DIA <- intersect(colnames(df_meta_prot_DIA_OS_sample), all_proteins_with_weights_DIA)
+
+results_weights_HR_DIA_OS_sample <- sapply(c("IGHV_mutated", "trisomy12", all_proteins_with_weights_DIA), function(p){
+new_formula <- as.formula(paste0( "Surv(time, status) ~ ", p  ))
+Extract.Cox( coxph(new_formula, 
+      data = df_meta_prot_DIA_OS_sample) )
+}) %>% t %>%
+  as.data.frame() %>%
+  rownames_to_column("symbol") %>%
+  mutate(symbol = str_remove(symbol, "proteomics_"))
+
+results_weights_HR_DIA_OS_sample <- results_weights_HR_DIA_OS_sample %>%
+  mutate( symbol = if_else(symbol == "IGHV_mutated", "IGHV", symbol)) %>%
+  mutate(symbol = as.factor(symbol)) %>%
+  mutate(symbol = factor( symbol, levels =  results_weights_HR_HiRIEF$symbol))
+
+
+LF_weights_HR_DIA_OS_sample_plot <- 
+  results_weights_HR_DIA_OS_sample %>%
+  separate(col = `HR (95% CI for HR)`, into = c("HR", "CI"), sep = "\\(" ) %>%
+  mutate(CI = gsub(")", "", CI )) %>%
+  separate(CI, into = c("lower_CI", "upper_CI"), sep = "-" ) %>%
+  mutate("Hazard ratio" = as.numeric(HR), lower_CI =  as.numeric(lower_CI), 
+         upper_CI= as.numeric(upper_CI),
+         symbol = as.factor(symbol)) %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" ),
+         symbol = factor(symbol, levels =  order_symbols )) %>% 
+  ggplot(aes( `symbol`, `Hazard ratio` )) +
+  geom_point(aes(color= sig)) +
+  #geom_vline(xintercept = 18.5, color="grey40", size=1) +
+  #geom_vline(xintercept = 12.5,  size=0.5, color="grey60") +
+  #geom_vline(xintercept = 10.5,  size=0.5, color= "grey60") +
+  geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= sig )) +
+  scale_color_manual(values = c("black", "blue")) +
+  pp_sra +
+  scale_x_discrete(drop=FALSE) +
+  coord_flip(ylim = c(0.05, 20)) +
+  #coord_flip(ylim = c(0, 4.5)) +
+  geom_hline(yintercept = 1, linetype= "dashed") +
+  scale_y_log10()
+
+LF_weights_HR_DIA_OS_sample_plot +
+  geom_text(y= 1.2, aes(label= p.value, color= sig )) +
+  theme(legend.position = 'none', axis.title.y = element_blank()) +
+  geom_vline(xintercept = 41.5, color="grey40", size=1) +
+  geom_vline(xintercept = 24.5,  size=0.5, color="grey60") +
+  geom_vline(xintercept = 10.5,  size=0.5, color= "grey60")
+```
+
+```{r}
+left_join (
+  (results_weights_HR_DIA_OS_sample %>%
+  separate(col = `HR (95% CI for HR)`, into = c("HR", "CI"), sep = "\\(" ) %>%
+  mutate(CI = gsub(")", "", CI )) %>%
+  separate(CI, into = c("lower_CI", "upper_CI"), sep = "-" ) %>%
+  mutate("Hazard ratio" = as.numeric(HR), lower_CI =  as.numeric(lower_CI), 
+         upper_CI= as.numeric(upper_CI),
+         symbol = as.factor(symbol)) %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" )) %>%
+  select(symbol, HR_DIA = `Hazard ratio` ) ),
+
+
+(results_weights_HR_HiRIEF  %>%
+  separate(col = `HR (95% CI for HR)`, into = c("HR", "CI"), sep = "\\(" ) %>%
+  mutate(CI = gsub(")", "", CI )) %>%
+  separate(CI, into = c("lower_CI", "upper_CI"), sep = "-" ) %>%
+  mutate("Hazard ratio" = as.numeric(HR), lower_CI =  as.numeric(lower_CI), 
+         upper_CI= as.numeric(upper_CI),
+         symbol = as.factor(symbol)) %>%
+  mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" ),
+         symbol = factor(symbol, levels =  order_symbols )) %>%
+  select(symbol, HR_HiRIEF = `Hazard ratio`  ) ) ) %>%
+  ggplot(aes(HR_DIA, HR_HiRIEF)) +
+  #geom_point() +
+  pp_sra +
+  geom_text(aes(label = symbol), size=3) +
+  geom_smooth(method = "lm") +
+  stat_cor()
+```
+
+# Save important plots
+```{r save image}
+save(plot_MOFA_weights_heatmap, LF_weights_HR_HiRIEF_plot, LF_weights_HR_DIA_OS_sample_plot,
+     file = "RData_plots/CLL_Proteomics_MOFA_Weights_Heatmap_Plots.RData")
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```

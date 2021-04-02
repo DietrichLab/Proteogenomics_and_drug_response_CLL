@@ -157,12 +157,24 @@ Annotate_Limma_Results <- function(limma_results){
 }
 ```
 
+### Rename deletions and gains functions
+```{r}
+change_chr_abber_brackets <- function(levels_alt){
+levels_alt %>% 
+  str_replace(., "del", "del(") %>% str_replace(., "gain", "gain(") %>%
+  str_replace(., "q", ")(q") %>% str_replace(., "p", ")(p") %>% 
+  str_replace(., "11\\)\\(q", "11)(q22.3)") %>% 
+  str_replace(., "p13", "p13)") %>% str_replace(., "q14", "q14)") %>%
+  str_replace(., "q24", "q24)")
+}
+```
+
 ## All genetic alterations limma
 ### Conduct limma
 ```{r limma other mutations, include=TRUE, results="markup", message=FALSE}
 limma_results <- NULL
 
-mut_to_limma <- colnames(proteomics_tbl_meta_biomart)[-(1:11)][c(-15)]
+mut_to_limma <- colnames(proteomics_tbl_meta_biomart)[-(1:12)][c(-15)]
 
 for(i in 1:length(mut_to_limma)){
   m <- mut_to_limma[i]
@@ -188,6 +200,7 @@ ggplot(data = limma_results) +
 ### Limma Annotation of hits
 
 #### Annotate
+##### FDR 0.1%
 ```{r limma annotation hits other mut conduct, eval=TRUE, echo=TRUE}
 limma_results <- Annotate_Limma_Results(limma_results)
 
@@ -201,36 +214,96 @@ dif_proteins_P_plot <- with(limma_results %>% mutate(dir=sign(logFC)), table("mu
   filter(mut!="health_record_bin_treated") %>%
   mutate(dir=as.numeric(dir)) %>%
   mutate(n=n*dir) %>%
-  mutate(mut=gsub("chrom_abber", "CNVs", mut), mut=gsub("health_record_bin", "IGHV", mut)) %>% 
+  mutate(mut=gsub("chrom_abber", "CNVs", mut), 
+         mut=gsub("health_record_bin", "IGHV", mut), 
+         mut= gsub("SNPs", "SNVs", mut) ) %>% 
   separate(mut, into = c("Type", "mut"), sep="_", extra = "merge" ) %>%
+  mutate(mut = change_chr_abber_brackets(mut) ) %>%
   filter(hit==TRUE) %>%
   arrange(desc(n)) %>%
   mutate(mut = as.factor(mut)) %>%
   mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+  mutate(dir = if_else(dir == 1, "up", if_else(dir == (-1), "down", "NA" ))) %>%
   ggplot(aes(mut, n)) +
   geom_col(aes(fill=as.character(dir))) +
   ylab("Nr. differentially abundant proteins") +
   facet_grid(~Type, scales = "free_x", space="free") +
-  pp_sra_noguides_tilted +
+  theme_bw() + 
+  theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 90), axis.title.x = element_blank(), 
+        strip.background = element_rect(fill = "white"), strip.text = element_text(face = "bold")) +
+  scale_fill_manual(values = c("#0571b0", "#ca0020"), drop=FALSE) +
+  geom_hline(yintercept = 0, color="darkgray")
+  
+
+dif_proteins_P_plot + geom_text(aes(mut, y=(-(-15-(sign(n)*45))), label=n ))
+```
+
+##### Plot Bargraph FDR 5%
+```{r}
+dif_proteins_P_FDR5_plot <- 
+  with(limma_results %>% 
+         mutate(dir=sign(logFC), 
+                hit = if_else(fdr <= 0.05 & 
+                                abs(logFC) >= 0.5, TRUE, 
+                              FALSE )), 
+       table("mut"=paste0(mut,"dir", dir), hit)) %>% 
+  as_tibble() %>% 
+  separate(mut, into = c("mut", "dir"), sep = "dir") %>%
+  filter(mut!="health_record_bin_treated") %>%
+  mutate(dir=as.numeric(dir)) %>%
+  mutate(n=n*dir) %>%
+  mutate(mut=gsub("chrom_abber", "CNVs", mut), 
+         mut=gsub("health_record_bin", "IGHV", mut), 
+         mut= gsub("SNPs", "SNVs", mut) ) %>% 
+  separate(mut, into = c("Type", "mut"), sep="_", extra = "merge" ) %>%
+  mutate(mut = change_chr_abber_brackets(mut) ) %>%
+  filter(hit==TRUE) %>%
+  arrange(desc(n)) %>%
+  mutate(mut = as.factor(mut)) %>%
+  mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+  mutate(dir = if_else(dir == 1, "up", if_else(dir == (-1), "down", "NA" ))) %>%
+  ggplot(aes(mut, n)) +
+  geom_col(aes(fill=dir)) +
+  ylab("Nr. differentially abundant proteins") +
+  facet_grid(~Type, scales = "free_x", space="free") +
+  theme_bw() + 
+  theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 90), axis.title.x = element_blank(), 
+        strip.background = element_rect(fill = "white"), strip.text = element_text(face = "bold")) +
   scale_fill_manual(values = c("#0571b0", "#ca0020"), drop=FALSE) +
   geom_hline(yintercept = 0, color="darkgray")
 
-dif_proteins_P_plot
 ```
 
 ## Plot limma hits in volcano plot
 ### All conditions
 ```{r limma plot vulcano plot other mut, fig.height=30, fig.width=12, eval=TRUE, echo=TRUE, fig.show="asis"}
-ggplot(data = limma_results, aes(logFC, -log10(pvalue), colour = hit_annotation)) +
-  geom_vline(aes(xintercept = 0)) +
-  geom_point() +
+limma_protein_all_volcano_plots <- 
+  limma_results %>%
+  mutate(mut=gsub( "chrom_abber_", "", mut),
+         mut=gsub( "SNPs_", "", mut),
+         mut=gsub( "health_record_bin_", "", mut),
+         FDR = if_else(fdr > 0.5, "no hit", 
+                       if_else(fdr < 0.001, "FDR 0.1%", "FDR 5%"))) %>%
+  mutate(mut = change_chr_abber_brackets(mut) ) %>%
+  ggplot( aes(logFC, -log10(pvalue), colour = FDR)) +
+    geom_vline(aes(xintercept = 0)) +
+    geom_point(alpha=0.5) +
+    facet_wrap( ~ mut , ncol = 4) +
+    xlab("log2(fold change)") +
+    scale_color_manual(values=c( "#ca0020", "#0571b0",  "grey40")) +
+    pp_sra + 
+    theme(legend.position = "top", legend.title = element_blank()) 
+
+limma_protein_all_volcano_plots +   
   geom_text(aes(label = rowname), 
-            data = subset(limma_results, hit_annotation == "hit"), 
-            vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE) +
-  facet_wrap( ~ mut , ncol = 2) +
-  xlab("log2(fold change)") +
-  scale_colour_hue() +
-  pp_sra
+              data = subset( (limma_results %>%
+                                mutate(mut=gsub( "chrom_abber_", "", mut),
+         mut=gsub( "SNPs_", "", mut),
+         mut=gsub( "health_record_bin_", "", mut)) %>%
+             mutate(mut = change_chr_abber_brackets(mut) )),
+                              hit_annotation == "hit"), 
+              vjust = 0, nudge_y = 0.1, size = 3, check_overlap = FALSE, 
+         color= "#ca0020") 
 
 tmp <- limma_results %>% filter(hit==TRUE) %>% 
   mutate(direction=sign(logFC)) %>%
@@ -448,17 +521,22 @@ XPO_volcano_plot + ggtitle("XPO1")+
 ### TP53
 ```{r limma plot volcano plot other mut TP53, eval=TRUE, echo=TRUE, warning=FALSE}
 TP53_volcano_plot <- limma_results %>% filter(mut=="SNPs_TP53") %>%
-  mutate("Affected_region" = if_else( rowname=="TP53", "TRUE", 
+  mutate( rowname = if_else(rowname == "TP53", "P53", rowname) ) %>%
+  mutate("Affected_region" = if_else( rowname=="P53", "TRUE", 
                                      if_else(hit_annotation == "hit", "FALSE", "not altered"))) %>% 
   mutate("Affected_region"= factor(Affected_region, levels=c("FALSE","TRUE", "not altered"))) %>%
 ggplot(aes(logFC, -log10(pvalue)))  +
   geom_vline(aes(xintercept = 0)) +
   geom_point(alpha=0.8, aes(colour = Affected_region)) +
   geom_text(aes(label = rowname), 
-            data = subset(limma_results %>% filter(mut=="SNPs_TP53", rowname!="TP53"), hit_annotation == "hit"), 
+            data = subset(limma_results %>% 
+                            mutate( rowname = if_else(rowname == "TP53", "P53", rowname) ) %>%
+                            filter(mut=="SNPs_TP53", rowname!="P53"), hit_annotation == "hit"), 
             vjust = 0, size = 3,  nudge_y = -0.3, nudge_x = -0.2, check_overlap = FALSE, color="#0571b0") +
-   geom_text(aes(label = rowname, color=rowname=="TP53"), 
-            data = subset(limma_results %>% filter(mut=="SNPs_TP53", rowname=="TP53")), 
+   geom_text(aes(label = rowname, color=rowname=="P53"), 
+            data = subset(limma_results %>% 
+                            mutate( rowname = if_else(rowname == "TP53", "P53", rowname) ) %>%
+                            filter(mut=="SNPs_TP53", rowname=="P53")), 
             vjust = 0, size = 3, nudge_y = -0.3, nudge_x = -0.2, check_overlap = FALSE) +
   xlab("log2(fold change)") +
   scale_color_manual(values = c("#0571b0", "orange1", "grey"), drop=FALSE) +
@@ -588,6 +666,7 @@ sum(tmp_pats$PG==TRUE)
 # Save important plots
 ```{r save image}
 save(dif_proteins_P_plot, XPO_volcano_plot, TP53_volcano_plot, ATM_volcano_plot, piechart_hits_prot_chr_tris12, 
+     dif_proteins_P_FDR5_plot, limma_protein_all_volcano_plots,
      file = "RData_plots/CLL_Proteomics_Limma_Plots.RData")
 ```
 

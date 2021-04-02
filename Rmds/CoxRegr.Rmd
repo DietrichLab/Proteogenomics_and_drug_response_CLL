@@ -291,11 +291,20 @@ sig_prot_univ <- Results$Univ.prot_TTNT %>% as_tibble()
 sig_prot_univ$hgnc_symbol <- rownames(Results$Univ.prot_TTNT)
 ```
 
-## BCR Protein Kaplan Meier Curves + SF3B1
+## Kaplan Meier Curves specific proteins
+### BCR
 ```{r}
 df <- df_TTNT
 PIK3CD_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "PIK3CD")
 PLCG2_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "PLCG2")
+```
+
+### Proteins loaded on latent factors
+```{r}
+CD20_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "MS4A1")
+SAMHD1_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "SAMHD1")
+FCRL2_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "FCRL2")
+CD40_surv_plot <- KM.Plot(dataset = t(multiomics_MAE@ExperimentList$proteomics), name = "CD40")
 ```
 
 ## Hazard ratios volcano plot
@@ -321,7 +330,8 @@ sig_prot_univ %>% transmute(hgnc_symbol, rank= base::rank(p.value, ties.method =
 # Figures for Publication
 ## LFs and Hazard ratios
 ```{r}
-LF_HR_plot <- Results[["Univ.LF_TTNT"]] %>%
+LF_HR_plot <- 
+  Results[["Univ.LF_TTNT"]] %>%
   separate(col = `HR (95% CI for HR)`, into = c("HR", "CI"), sep = "\\(" ) %>%
   mutate(CI = gsub(")", "", CI )) %>%
   separate(CI, into = c("lower_CI", "upper_CI"), sep = "-" ) %>%
@@ -330,22 +340,23 @@ LF_HR_plot <- Results[["Univ.LF_TTNT"]] %>%
   mutate("Latent factor" = factor(`Latent factor`, levels = c(1:nrow(Results[["Univ.LF_TTNT"]])) ) ) %>% 
   mutate(sig = if_else( (lower_CI < 1 & upper_CI <1) | (lower_CI > 1 & upper_CI >1), "significant", "NS" )) %>% 
   ggplot(aes( `Latent factor`, `Hazard ratio` )) +
-  geom_point() +
+  geom_point(aes(color=sig)) +
   geom_linerange(aes( ymin=lower_CI, ymax= upper_CI, color= sig )) +
   scale_color_manual(values = c("black", "blue")) +
   pp_sra +
-  coord_flip(ylim = c(0.4, 2.8)) +
-  geom_hline(yintercept = 1, linetype= "dashed") 
+  coord_flip(ylim = c(0.22, 4.5)) +
+  geom_hline(yintercept = 1, linetype= "dashed") +
+  scale_y_log10()
 
 LF_HR_plot +
-  geom_text(y= 2.7, aes(label= p.value )) +
+  geom_text(y= 0.6, aes(label= p.value, color=sig )) +
   theme(legend.position = 'none') 
 ```
 
 # Save important plots
 ```{r save image}
 save(  HR_BCR_volcano, PIK3CD_surv_plot,  PLCG2_surv_plot, 
-  LF_HR_plot ,
+  LF_HR_plot, CD20_surv_plot, SAMHD1_surv_plot, FCRL2_surv_plot, CD40_surv_plot,
 file = "RData_plots/CLL_Proteomics_TTNT_Plots.RData")
 ```
 

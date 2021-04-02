@@ -49,6 +49,19 @@ load("data/CLL_Proteomics_Setup.RData")
 load("data/CLL_Proteomics_LimmaProteomics.RData")
 ```
 
+## Functions
+### Rename deletions and gains functions
+```{r}
+change_chr_abber_brackets <- function(levels_alt){
+levels_alt %>% 
+  str_replace(., "del", "del(") %>% str_replace(., "gain", "gain(") %>%
+  str_replace(., "q", ")(q") %>% str_replace(., "p", ")(p") %>% 
+  str_replace(., "11\\)\\(q", "11)(q22.3)") %>% 
+  str_replace(., "p13", "p13)") %>% str_replace(., "q14", "q14)") %>%
+  str_replace(., "q24", "q24)")
+}
+```
+
 # Analysis
 ## Correlation gene wise
 ```{r analysis RNASeq correlation genes 1, warning=FALSE, fig.height=3, fig.width=6, results="markup", include=TRUE}
@@ -161,7 +174,7 @@ splice_cor_sig_plot +
 
 ## Differential expression RNASeq
 ```{r rnaseq DESeq function, eval=TRUE, echo=TRUE, message=FALSE}
-mut_to_limma <- colnames(proteomics_tbl_meta_biomart)[-(1:11)][c(-15)]
+mut_to_limma <- colnames(proteomics_tbl_meta_biomart)[-(1:12)][c(-15)]
 ddsOMZ <- multiomics_MAE[["RNAseq_full"]][,pat_overlap_prot_RNA]
 
 
@@ -237,21 +250,61 @@ dif_genes_R_plot <- with(res_RNA_annotated %>% mutate(dir=sign(log2FoldChange_RN
   filter(mut!="health_record_bin_treated") %>%
   mutate(dir=as.numeric(dir)) %>%
   mutate(n=n*dir) %>%
-  mutate(mut=gsub("chrom_abber", "CNVs", mut), mut=gsub("health_record_bin", "IGHV", mut)) %>% 
+  mutate(mut=gsub("chrom_abber", "CNVs", mut), 
+         mut=gsub("health_record_bin", "IGHV", mut),
+         mut= gsub("SNPs", "SNVs", mut)) %>% 
   separate(mut, into = c("Type", "mut"), sep="_", extra = "merge" ) %>%
+  mutate(mut = change_chr_abber_brackets(mut) ) %>%
   filter(hit==TRUE) %>%
   arrange(desc(n)) %>%
   mutate(mut = as.factor(mut)) %>%
   mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+  mutate(dir = if_else(dir == 1, "up", if_else(dir == (-1), "down", "NA" ))) %>%
   ggplot(aes(mut, n)) +
   geom_col(aes(fill=as.character(dir))) +
   ylab("Nr. differentially abundant genes") +
   facet_grid(~Type, scales = "free_x", space="free") +
-  pp_sra_noguides_tilted +
+  theme_bw() + 
+    theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 90), axis.title.x = element_blank(), 
+          strip.background = element_rect(fill = "white"), strip.text = element_text(face = "bold")) +
   scale_fill_manual(values = c("#92c5de", "#f4a582")) +
   geom_hline(yintercept = 0, color="darkgray")
 
 dif_genes_R_plot
+```
+
+### Plot Bargraph FDR 5%
+```{r}
+dif_genes_R_FDR5_plot <- 
+  with(res_RNA_annotated %>% 
+         mutate(dir=sign(log2FoldChange_RNA),
+                hit = if_else(padj_RNA <= 0.05 & 
+                                  abs(log2FoldChange_RNA) >= fc_hit_threshold, TRUE, 
+                                FALSE )), 
+       table("mut"=paste0(alt_RNA,"dir", dir), hit)) %>% as_tibble() %>% 
+    separate(mut, into = c("mut", "dir"), sep = "dir") %>%
+    filter(mut!="health_record_bin_treated") %>%
+    mutate(dir=as.numeric(dir)) %>%
+    mutate(n=n*dir) %>%
+    mutate(mut=gsub("chrom_abber", "CNVs", mut), 
+           mut=gsub("health_record_bin", "IGHV", mut),
+           mut= gsub("SNPs", "SNVs", mut)) %>% 
+    separate(mut, into = c("Type", "mut"), sep="_", extra = "merge" ) %>%
+    mutate(mut = change_chr_abber_brackets(mut) ) %>%
+    filter(hit==TRUE) %>%
+    arrange(desc(n)) %>%
+    mutate(mut = as.factor(mut)) %>%
+    mutate(mut = factor(mut, levels = unique(.$mut))) %>%
+    mutate(dir = if_else(dir == 1, "up", if_else(dir == (-1), "down", "NA" ))) %>%
+    ggplot(aes(mut, n)) +
+    geom_col(aes(fill=as.character(dir))) +
+    ylab("Nr. differentially abundant genes") +
+    facet_grid(~Type, scales = "free_x", space="free") +
+    theme_bw() + 
+    theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 90), axis.title.x = element_blank(), 
+          strip.background = element_rect(fill = "white"), strip.text = element_text(face = "bold")) +
+    scale_fill_manual(values = c("#92c5de", "#f4a582")) +
+    geom_hline(yintercept = 0, color="darkgray")
 ```
 
 ## RNASeq only Volcano plots colored by chromosome
@@ -406,7 +459,9 @@ res_RNA %>%
 
 # Save data needed for further analysis
 ```{r}
-save(cor_PR_plot, dif_genes_R_plot, sig_hits_plot, #piechart_hits_RNA_chr_tris12, 
+save(cor_PR_plot, dif_genes_R_plot, sig_hits_plot,
+     dif_genes_R_FDR5_plot,
+     #piechart_hits_RNA_chr_tris12, 
      splice_cor_sig_plot,
 file = "RData_plots/CLL_Proteomics_RNASeq_Plots.RData")
 ```

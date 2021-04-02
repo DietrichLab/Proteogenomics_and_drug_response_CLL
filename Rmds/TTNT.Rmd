@@ -66,7 +66,7 @@ df_TTNT <- filter(df_TTNT, ObsTime!=0) %>%
   filter(!treatment_status=="intreatment")
 
 #KM.Plot <- function(TTNT_CCP, name, plot=TRUE, addedTitle="") {
-TTNT_CCP <-as.matrix(multiomics_MAE["PG" , ,]@colData["PG"])
+TTNT_CCP <-as.matrix(multiomics_MAE[]@colData["PG"])
 
   
   # Filter for patients with complete data
@@ -74,14 +74,19 @@ TTNT_CCP <-as.matrix(multiomics_MAE["PG" , ,]@colData["PG"])
     filter(patient_ID %in% rownames(TTNT_CCP)) %>% 
     dplyr::select(patient_ID, time, status)
   
+vec_PG <- c("Tris12M-PG", "Tris12U-PG", "M-PG", "U-PG", "New-PG", "TP53-PG")
+names(vec_PG) <- paste0(1:6)
+  
   # Merge protein data with TTNT within one data frame
   df_surv <- TTNT_CCP %>% 
     as.data.frame() %>% 
     rownames_to_column(var = "patient_ID") %>% 
     right_join(df_short, by="patient_ID") %>% 
     dplyr::select(time, status, PG) %>%
+    mutate(PG = factor(vec_PG[PG], levels= unname(vec_PG[c(5,1:4,6)] ) ) ) %>%
     dplyr::rename(Factor = PG) %>%
     mutate(BinFactor = Factor)
+
   
   formel <- as.formula(paste0("Surv(time, status) ~ Factor"))
   
@@ -91,13 +96,18 @@ TTNT_CCP <-as.matrix(multiomics_MAE["PG" , ,]@colData["PG"])
   
   df_surv$time <- df_surv$time/365
   
+
+  
   fit <- survfit(Surv(time, status) ~ BinFactor, data = df_surv)
   pp_sra_surv <- pp_sra
   pp_sra_surv[[2]]$aspect.ratio <- 1
   pp_sra_surv[[2]]$text <- element_text(size=15)
+  
+
   TTNT_CCP_plot <- ggsurvplot(fit, data = df_surv, 
                  xlab = "Time in years",
-                 palette = colors_CCP ,
+                 palette = colors_CCP[c(5,1:4,6)] ,
+                 #legend.labs = gsub("BinFactor=", "", names(fit$strata) ),
                  legend.labs = gsub("BinFactor=", "", names(fit$strata) ),
                  legend.title = "PG",
                  legend = "right",
@@ -105,8 +115,48 @@ TTNT_CCP <-as.matrix(multiomics_MAE["PG" , ,]@colData["PG"])
                  xlim=c(0,7),
                  ylab="Treatment free survival"
                  ) 
+  
+
 
 TTNT_CCP_plot + ggtitle("PG groups and time to next treatment") 
+```
+
+#### Median follow up in months TTT
+```{r}
+df_med_fu <- 
+  df_surv %>% 
+  filter(!is.na(status), !is.na(Factor)) %>%
+  mutate(status_med = if_else(status == 2,1, 2), time=time*12 ) 
+```
+
+```{r median follow up time}
+df_med_fu <- df_med_fu %>%
+    dplyr::select(time, status_med)
+
+formel <- as.formula(paste0("Surv(time, status_med) ~ 1"))
+  
+survfit(Surv(time, status_med) ~ 1, data = df_med_fu)
+```
+
+#### Median follow up in months OS
+```{r}
+df_OS <- as.data.frame(colData(multiomics_MAE))
+
+df_OS <- df_OS %>% 
+  dplyr::rename(OS = timeDiff_OS_orig) %>%
+  mutate(time = ifelse(is.na(OS), ObsTime, OS), 
+         status = ifelse(is.na(OS), 2, 1)) %>%
+  mutate(time = time/365*12)
+
+df_OS <- filter(df_OS, ObsTime!=0)
+
+df_OS <- df_OS %>%
+    filter(patient_ID %in% rownames( na.omit(TTNT_CCP)  ) ) %>% 
+    dplyr::select(patient_ID, time, status)
+  
+formel <- as.formula(paste0("Surv(time, status) ~ 1"))
+  
+survfit(Surv(time, status) ~ 1, data = df_OS)
 ```
 
 # Save important plots

@@ -1,0 +1,352 @@
+---
+title: "DIA: Association between protein abundance and genetics"
+author: "Sophie Herbst"
+output:
+  BiocStyle::html_document:
+    self_contained: true
+    code_download: true
+    code_folding: hide
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+Analysis date: `r Sys.Date()`
+
+# Setup
+## Load libraries
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(limma)
+library(ggbeeswarm)
+library(MultiAssayExperiment)
+library(pheatmap)
+library(ggpubr)
+library(readxl)
+library(biomartr)
+library(biomaRt)
+library(Rtsne)
+library(pheatmap)
+select <- dplyr::select
+
+set.seed(2020)
+```
+
+## Load data
+```{r}
+source("Data/Figure_layouts.R")
+DIA <- readRDS("Robjects/DIA2_alldata.RData")
+DIA_complete_formated <- readRDS("Robjects/DIA_complete_formated_v3.RData") 
+
+load("Data/CLL_Proteomics_Setup.RData")
+load("Data/CLL_Proteomics_LimmaProteomics.RData")
+load("Robjects/pred_DIA_PG5.RData")
+```
+
+# Analysis
+## TP53
+### TP53
+```{r}
+message("Did we measure TP53?")
+any(DIA$PG.ProteinGroups=="TP53")
+
+message("Is TP53 present in the unfiltered dataset?")
+any(DIA_complete_formated$PG.ProteinGroups=="TP53")
+
+DIA_complete_formated %>% filter(PG.ProteinGroups=="TP53", !is.na( log.norm.MS2Quantity)) %>%
+  select(Sample, Pat_ID, log.norm.MS2Quantity, cohort, TP53)
+
+```
+
+## Trisomy 12
+### BCR proteins
+```{r}
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in% BCR_genes  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_BCR, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+```
+
+### Upregulation gene chr12 in trisomy 12
+```{r}
+plot_chromosome_theme <- list(
+    coord_cartesian(ylim=c(-0.8,0.8)),
+    facet_wrap(~paste("chromosome",chromosome_name), scales = "free_x"),
+    ylab("log2 norm. protein abundance"),
+    xlab("Protein location on chromosome"),
+    scale_color_manual(values=c("#0571b0", "#ca0020", "grey"))
+)
+
+Chr12_P_plot_DIA_all <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12")) %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("Trisomy12 all cohorts") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_all +  theme(aspect.ratio=0.4, legend.position = 'none') 
+```
+
+### Differentially abundant proteins HiRIEF
+#### Upregulated hits
+```{r}
+up_in_tris12_hit <-  
+  limma_results %>% filter(mut == "chrom_abber_trisomy12", 
+                           logFC > 0, hit_annotation == "hit" ) %>%
+  .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_hit  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the upregulated hits found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_hit  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_up, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+
+```
+
+#### Downregulated hits
+```{r}
+down_in_tris12_hit <-  
+  limma_results %>% filter(mut == "chrom_abber_trisomy12", 
+                           logFC < 0, hit_annotation == "hit" ) %>%
+  .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_hit  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the downregulated hits found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_hit  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_down, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+
+```
+
+#### Upregulated candidates
+```{r}
+up_in_tris12_cand <-  
+  limma_results %>% filter(mut == "chrom_abber_trisomy12", 
+                           logFC > 0, hit_annotation %in% c( "hit", "candidate") ) %>%
+  .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_cand  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the upregulated hits found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in%  up_in_tris12_cand  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_up, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+```
+
+#### Downregulated hits
+```{r}
+down_in_tris12_cand <-  
+  limma_results %>% filter(mut == "chrom_abber_trisomy12", 
+                           logFC < 0, hit_annotation %in% c( "hit", "candidate") ) %>%
+  .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_cand  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the downregulated hits found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in%  down_in_tris12_cand  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_down, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+```
+
+#### Top 100 upregulated proteins
+```{r}
+up_in_tris12_100 <-  
+  limma_results %>% filter(mut == "chrom_abber_trisomy12", 
+                           logFC > 0, fdr < 0.1) %>%
+  arrange(desc(logFC)) %>%
+  dplyr::slice(1:100) %>% .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_100  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the top 100 upregulated proteins found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_up, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+
+```
+
+
+#### Top 100 downregulated proteins
+```{r}
+down_in_tris12_100 <-  
+  limma_results %>% filter(mut == "chrom_abber_trisomy12", 
+                           logFC < 0, fdr < 0.1) %>%
+  arrange(logFC) %>%
+  dplyr::slice(1:100) %>% .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_100  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the top 100 downregulated proteins found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_down, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+```
+
+
+## IGHV 
+### ZAP70
+```{r, warning=FALSE}
+############ Germany_1
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70", cohort == "Germany_1"  ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, log.norm.MS2Quantity, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("DIA proteomics Germany_1") +
+  pp_sra
+
+############ all
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70" ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, log.norm.MS2Quantity, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("DIA proteomics all") +
+  pp_sra
+
+message("Number of NAs DIA all")
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70"  ) %>% select(IGHV_mutated, Sample, log.norm.MS2Quantity) %>% unique %>% group_by(IGHV_mutated) %>% summarise(NAs=sum(is.na(log.norm.MS2Quantity)) )
+```
+
+### BCR proteins
+```{r}
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups %in% BCR_genes) %>%
+  group_by(Sample, IGHV_mutated, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, mean_BCR, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("BCR protein abundances ~ IGHV") +
+  pp_sra
+```
+
+## IGHV + trisomy12
+### BCR proteins
+```{r}
+DIA %>% 
+  filter(!is.na(IGHV_mutated),!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1") %>%
+  group_by(Sample, IGHV_mutated,trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(interaction(IGHV_mutated, trisomy12), mean_BCR, group= interaction(IGHV_mutated, trisomy12), fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means() +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("BCR protein abundances ~ IGHV + trisomy12") +
+  pp_sra
+```
+
+
+# Session Info
+```{r}
+sessionInfo()
+```
+
+```{r knit exit}
+knitr::knit_exit()
+```
