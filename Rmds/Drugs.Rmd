@@ -99,6 +99,7 @@ heatmap_drug_drug_cor_legend <- pheatmap(drug_cor_mat,
 XPO_selinexor_plot_3 <- 
   wideFormat(multiomics_MAE[,,c("SNPs", "drug_resp_mono")][c("Selinexor_3" , "XPO1"),,] ) %>% 
   as_tibble() %>% 
+  filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
     mutate_at(.vars =c("SNPs_XPO1"), as.logical ) %>%
     filter(!is.na(SNPs_XPO1 )) %>% 
   gather("cond", "Norm. percentage alive cells", c(-primary, -SNPs_XPO1 )) %>%
@@ -122,6 +123,7 @@ XPO_selinexor_plot_3 +  stat_compare_means(method = "wilcox")
 TP53_Nutlin_plot_3 <- 
   wideFormat(multiomics_MAE[,,c("SNPs", "drug_resp_mono")][c("Nutlin 3a_3" , "TP53"),,] ) %>% 
   as_tibble() %>% 
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   mutate_at(.vars =c("SNPs_TP53"), as.logical ) %>%
   filter(!is.na(SNPs_TP53 )) %>% 
   gather("cond", "Norm. percentage alive cells", c(-primary, -SNPs_TP53 )) %>%
@@ -144,6 +146,7 @@ TP53_Nutlin_plot_3 + stat_compare_means(method = "wilcox")
 ### Boxplots specific drugs
 ```{r proteomics and drug response CCP sel, message=FALSE}
 drugs_CCP_Duve_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Duvelisib_3")) %>%
@@ -162,6 +165,7 @@ drugs_CCP_Duve_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_Ibru_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Ibrutinib_2")) %>%
@@ -180,6 +184,7 @@ drugs_CCP_Ibru_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_Ide_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Idelalisib_3")) %>%
@@ -198,6 +203,7 @@ drugs_CCP_Ide_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_BAY_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "BAY61-3606_2")) %>%
@@ -216,6 +222,7 @@ drugs_CCP_BAY_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_Selu_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Selumetinib_2")) %>%
@@ -234,6 +241,7 @@ drugs_CCP_Selu_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_Doxo_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c("Doxorubicine_3")) %>%
@@ -253,6 +261,7 @@ drugs_CCP_Doxo_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_Cyta_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c("Cytarabine_2")) %>%
@@ -272,6 +281,7 @@ drugs_CCP_Cyta_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_Flu_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Fludarabine_2")) %>%
@@ -290,6 +300,7 @@ drugs_CCP_Flu_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
 drugs_CCP_proteasome_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+    filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c("Carfilzomib_1", "Ixazomib_2")) %>%
@@ -310,6 +321,7 @@ drugs_CCP_proteasome_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
  drugs_CCP_Ena_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+     filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Enasidenib_1")) %>%
@@ -328,6 +340,7 @@ drugs_CCP_Ena_plot + theme(aspect.ratio = 1) + guides(fill=FALSE) +
   stat_compare_means( label.y = 1.6)
 
  drugs_CCP_Thio_plot <- longFormat(multiomics_MAE[ ,,"drug_resp_mono"], colDataCols = "PG") %>% as_tibble() %>%
+     filter(primary %in% unname(unlist(colnames(multiomics_MAE[,,"proteomics"])))) %>%
   filter(!is.na(PG)) %>%
   filter( !( grepl("DMSO", rowname)   ) )  %>% 
   filter(rowname %in% c( "Thioguanine_3")) %>%
