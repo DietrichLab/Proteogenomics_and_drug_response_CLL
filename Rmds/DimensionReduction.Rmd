@@ -96,7 +96,8 @@ tsne_IGHVtris_plot <- ggplot(rtsne_out_df %>% filter(health_record_bin_IGHV_muta
   pp_sra_noguides 
 tsne_IGHVtris_plot +  theme(aspect.ratio=1, plot.title = element_text(size = 30)) #+
 
-sapply(colnames(rtsne_out_df)[c(4,5,8:26)], function(var){
+sapply(colnames(rtsne_out_df)[c(4,5,8:22)], function(var){
+  print(var)
   print(ggplot(rtsne_out_df, aes(V1, V2)) +
           geom_point(aes_string(color=var), size=3) +
     scale_color_manual(values = c( "#0571b0", "#ca0020", "grey"))  + 
@@ -202,6 +203,12 @@ PG_BCR_proteins_pheatmap <- pheatmap(t(tmp_BCR_mx[pat_order_hclust, ]),
          color = inferno(length(breaks)), border_color = NA, 
          gaps_col = (which(!tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1],  
          breaks = breaks , cutree_rows = 4, show_colnames = F, treeheight_row = 0, fontsize_row = 8)
+
+PG_BCR_proteins_pheatmap_notscaled <- pheatmap(t(tmp_BCR_mx[pat_order_hclust, ]), 
+         annotation_col = tmp_BCR_anno, annotation_colors = ann_colors, cluster_cols = FALSE, 
+         color = inferno(length(breaks)), border_color = NA, 
+         gaps_col = (which(!tmp_BCR_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1],  
+         cutree_rows = 4, show_colnames = F, treeheight_row = 0, fontsize_row = 8)
 ```
 
 #### All KEGG BCR signaling proteins
@@ -299,6 +306,12 @@ PG_splice_proteins_pheatmap <- pheatmap(t(tmp_Splice_GO_mx[pat_order_hclust_spli
          color =  inferno(length(breaks)), border_color = NA, 
          gaps_col = (which(!tmp_Splice_GO_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1],
          breaks = breaks , show_colnames = F , treeheight_row = 0, fontsize_row = 8)
+
+PG_splice_proteins_pheatmap_notscaled <- pheatmap(t(tmp_Splice_GO_mx[pat_order_hclust_splice, ]), 
+         annotation_col = tmp_Splice_GO_anno, annotation_colors = ann_colors, cluster_cols = FALSE, 
+         color =  inferno(length(breaks)), border_color = NA, 
+         gaps_col = (which(!tmp_Splice_GO_anno %>% rownames_to_column() %>% arrange(PG, IGHV) %>% .$PG %>% duplicated())-1)[-1],
+          show_colnames = F , treeheight_row = 0, fontsize_row = 8)
 ```
 
 
@@ -535,7 +548,7 @@ tsne_CCPRNA_R_plot <- ggplot(rtsne_out_RNA_df, aes(V1, V2)) +
   guides(color=guide_legend(title="CC_RNA"))
 tsne_CCPRNA_R_plot+  theme(aspect.ratio=1, plot.title = element_text(size = 30))
 
-sapply(colnames(rtsne_out_RNA_df)[c(4,5,9:27)], function(var){
+sapply(colnames(rtsne_out_RNA_df)[c(4,5,9:16)], function(var){
   print(ggplot(rtsne_out_RNA_df, aes(V1, V2)) +
           geom_point(aes_string(color=var), size=3) +
     scale_color_manual(values = c("#92c5de", "#f4a582",  "grey"))  + 
@@ -557,8 +570,8 @@ BCR_genes_RNA_mean <- assay(multiomics_MAE[BCR_genes_RNA, ,"RNAseq_norm"]) %>% c
 ```{r save image}
 save(tsne_CCP_P_plot, tsne_CCP_R_plot,tsne_CCPRNA_R_plot, tsne_IGHVtris_plot, BCR_CCP_P_plot, splicing_CCP_P_plot,
      PCA_CCP_1_2, PCA_CCP_1_3, PCA_CCP_1_4, PCA_CCP_2_3, 
-     PG_BCR_proteins_pheatmap,
-     PG_splice_proteins_pheatmap, PG_BCAA_proteins_pheatmap,
+     PG_BCR_proteins_pheatmap, PG_BCR_proteins_pheatmap_notscaled,
+     PG_splice_proteins_pheatmap, PG_splice_proteins_pheatmap_notscaled, PG_BCAA_proteins_pheatmap,
      BCAA_CCP_P_plot, proteasome_CCP_P_plot, PG_proteasome_proteins_pheatmap,
 file = "RData_plots/CLL_Proteomics_DimensionReduction_Plots.RData")
 ```
