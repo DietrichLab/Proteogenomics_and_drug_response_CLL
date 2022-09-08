@@ -60,6 +60,350 @@ DIA_complete_formated %>% filter(PG.ProteinGroups=="TP53", !is.na( log.norm.MS2Q
 
 ```
 
+### BCR proteins
+```{r}
+DIA %>% 
+  filter(!is.na(TP53),PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1" ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_BCR, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+
+DIA %>% 
+  filter(!is.na(TP53),PG.ProteinGroups %in% BCR_genes  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_BCR, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
+```
+
+#### No PG5
+```{r}
+DIA %>% 
+  filter(!is.na(TP53),PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1",
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_BCR, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics, no PG5") +
+  pp_sra 
+
+DIA %>% 
+  filter(!is.na(TP53),PG.ProteinGroups %in% BCR_genes,
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_BCR, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
+```
+
+### Differentially abundant proteins HiRIEF
+#### Top 100 upregulated proteins
+```{r}
+up_in_TP53_100 <-  
+  limma_results %>% filter(mut == "SNPs_TP53", 
+                           logFC > 0, fdr < 0.1) %>%
+  arrange(desc(logFC)) %>%
+  dplyr::slice(1:100) %>% .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% up_in_TP53_100  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the top 100 upregulated proteins found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% up_in_TP53_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_up, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+
+DIA %>% 
+  filter(!is.na(TP53),PG.ProteinGroups %in% up_in_TP53_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_up, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
+```
+
+
+#### Top 100 downregulated proteins
+```{r}
+down_in_TP53_100 <-  
+  limma_results %>% filter(mut == "SNPs_TP53", 
+                           logFC < 0, fdr < 0.1) %>%
+  arrange(logFC) %>%
+  dplyr::slice(1:100) %>% .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% down_in_TP53_100  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the top 100 downregulated proteins found in DIA data"))
+
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% down_in_TP53_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_down, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("All DIA proteomics") +
+  pp_sra 
+
+DIA %>% 
+  filter(!is.na(TP53),PG.ProteinGroups %in% down_in_TP53_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, TP53) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(TP53 = as.factor(TP53)) %>%
+  ggplot(aes(TP53, mean_down, group= TP53, fill=TP53 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
+```
+
+#### Heatmap of differential proteins
+##### Cohorts pooled
+```{r}
+down_in_TP53_X <-  
+  limma_results %>% filter(mut == "SNPs_TP53", 
+                           logFC < 0, fdr < 0.05) %>%
+  arrange(logFC) %>%
+  dplyr::slice(1:100) %>% .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% down_in_TP53_X  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the top downregulated proteins found in DIA data"))
+
+up_in_TP53_X <-  
+  limma_results %>% filter(mut == "SNPs_TP53", 
+                           logFC > 0, fdr < 0.05) %>%
+  arrange(desc(logFC)) %>%
+  dplyr::slice(1:100) %>% .$gene
+
+message(paste(
+DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% up_in_TP53_X  ) %>% .$PG.ProteinGroups %>% unique %>% length,
+"of the top downregulated proteins found in DIA data"))
+
+TP53_diff_mx <- DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, log.norm.MS2Quantity, PG.ProteinGroups ) %>%
+  pivot_wider(names_from =  Sample, values_from= log.norm.MS2Quantity ) %>%
+  column_to_rownames( "PG.ProteinGroups" ) %>%
+  as.matrix() 
+  
+TP53_diff_ann <- DIA %>% 
+  filter(cohort != "Germany_1", !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, TP53, cohort, IGHV_mutated, trisomy12 ) %>%
+  unique() %>%
+  column_to_rownames("Sample")
+
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    annotation_col = TP53_diff_ann,
+    scale = "row"
+  )
+
+TP53_diff_ann <- TP53_diff_ann %>% arrange(TP53)
+TP53_diff_mx <- TP53_diff_mx[, rownames(TP53_diff_ann)]
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann,
+    cluster_cols = FALSE
+  )
+```
+
+##### Cohorts separately
+###### Germany
+```{r}
+TP53_diff_mx <- DIA %>% 
+  filter(cohort %in% c("Germany_2", "Germany_3") , !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, log.norm.MS2Quantity, PG.ProteinGroups ) %>%
+  pivot_wider(names_from =  Sample, values_from= log.norm.MS2Quantity ) %>%
+  column_to_rownames( "PG.ProteinGroups" ) %>%
+  as.matrix() 
+  
+TP53_diff_ann <- DIA %>% 
+  filter(cohort %in% c("Germany_2", "Germany_3") , !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, TP53, cohort, IGHV_mutated, trisomy12, del17p13 ) %>%
+  unique() %>%
+  column_to_rownames("Sample")
+
+message("unscaled")
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    #scale = "row",
+    annotation_col = TP53_diff_ann
+  )
+
+message("row scaled")
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann
+  )
+
+TP53_diff_ann <- TP53_diff_ann %>% arrange(TP53)
+TP53_diff_mx <- TP53_diff_mx[, rownames(TP53_diff_ann)]
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann,
+    cluster_cols = FALSE
+  )
+```
+
+###### Sweden
+```{r}
+TP53_diff_mx <- DIA %>% 
+  filter(cohort %in% c("Sweden_1") , !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, log.norm.MS2Quantity, PG.ProteinGroups ) %>%
+  pivot_wider(names_from =  Sample, values_from= log.norm.MS2Quantity ) %>%
+  column_to_rownames( "PG.ProteinGroups" ) %>%
+  as.matrix() 
+  
+TP53_diff_ann <- DIA %>% 
+  filter(cohort %in% c("Sweden_1") , !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, TP53, cohort, IGHV_mutated, trisomy12 ) %>%
+  unique() %>%
+  column_to_rownames("Sample")
+
+message("unscaled")
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    #scale = "row",
+    annotation_col = TP53_diff_ann
+  )
+
+message("row scaled")
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann
+  )
+
+TP53_diff_ann <- TP53_diff_ann %>% arrange(TP53)
+TP53_diff_mx <- TP53_diff_mx[, rownames(TP53_diff_ann)]
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann,
+    cluster_cols = FALSE
+  )
+```
+
+###### High risk
+```{r}
+TP53_diff_mx <- DIA %>% 
+  filter(cohort %in% c("High_risk") , !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, log.norm.MS2Quantity, PG.ProteinGroups ) %>%
+  pivot_wider(names_from =  Sample, values_from= log.norm.MS2Quantity ) %>%
+  column_to_rownames( "PG.ProteinGroups" ) %>%
+  as.matrix() 
+  
+TP53_diff_ann <- DIA %>% 
+  filter(cohort %in% c("High_risk") , !is.na(TP53),PG.ProteinGroups %in% c(up_in_TP53_X, down_in_TP53_X  ) ) %>%
+  select( Sample, TP53, cohort, IGHV_mutated, trisomy12, del17p13 ) %>%
+  unique() %>%
+  column_to_rownames("Sample")
+
+message("unscaled")
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    #scale = "row",
+    annotation_col = TP53_diff_ann
+  )
+
+message("row scaled")
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann
+  )
+
+TP53_diff_ann <- TP53_diff_ann %>% arrange(TP53)
+TP53_diff_mx <- TP53_diff_mx[, rownames(TP53_diff_ann)]
+TP53_diff_mx %>% 
+  pheatmap(
+    color =  RColorBrewer::brewer.pal(100, "RdBu"),
+    show_colnames = F,
+    scale = "row",
+    annotation_col = TP53_diff_ann,
+    cluster_cols = FALSE
+  )
+```
+
 ## Trisomy 12
 ### BCR proteins
 ```{r}
@@ -76,6 +420,20 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("All DIA proteomics") +
   pp_sra 
+
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in% BCR_genes  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_BCR, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
 
 ### Upregulation gene chr12 in trisomy 12
@@ -87,6 +445,102 @@ plot_chromosome_theme <- list(
     xlab("Protein location on chromosome"),
     scale_color_manual(values=c("#0571b0", "#ca0020", "grey"))
 )
+
+Chr12_P_plot_DIA_Germany_1 <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12"), cohort == "Germany_1") %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("Germany_1 trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_Germany_1 +  theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr12_P_plot_DIA_Germany_2 <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12"), cohort == "Germany_2") %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("Germany_2 trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_Germany_2 +  theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr12_P_plot_DIA_Germany_3 <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12"), cohort == "Germany_3") %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("Germany_3 trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_Germany_3 +  theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr12_P_plot_DIA_Germany_2_3 <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12"), cohort %in% c( "Germany_3", "Germany_2" ) ) %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("Germany_2 and Germany_3 trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_Germany_2_3 +  theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr12_P_plot_DIA_Sweden_1 <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12"), cohort == "Sweden_1") %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("Sweden_1 trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_Sweden_1 +  theme(aspect.ratio=0.4, legend.position = 'none') 
+
+Chr12_P_plot_DIA_High_risk <- 
+  DIA %>%
+  separate( col = PG.Locus, into = c(NA, "chromosome_name", "start_position") , sep = ":", remove = FALSE, extra = "drop" ) %>%
+  filter( !is.na(log.norm.MS2Quantity), 
+          chromosome_name %in% c("12"), cohort == "High_risk") %>%
+  mutate(trisomy12 = as.factor(trisomy12),
+         start_position = as.numeric(start_position)) %>%
+  ggplot(aes(start_position, log.norm.MS2Quantity, group=Sample)) +
+  geom_point(size=0.5, alpha=0.2, color="darkgrey") +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, aes(color=trisomy12), span=0.5, method = "loess") +
+  plot_chromosome_theme +
+  pp_sra +
+  ggtitle("High_risk trisomy12") +
+  geom_rect(xmin = 0, ymin=-0.78, ymax=0.78, xmax=133275309, color="gray40", size=1.5,  fill=NA)
+Chr12_P_plot_DIA_High_risk +  theme(aspect.ratio=0.4, legend.position = 'none') 
 
 Chr12_P_plot_DIA_all <- 
   DIA %>%
@@ -132,6 +586,19 @@ DIA %>%
   ggtitle("All DIA proteomics") +
   pp_sra 
 
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_hit  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_up, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
 
 #### Downregulated hits
@@ -160,7 +627,23 @@ DIA %>%
   ggtitle("All DIA proteomics") +
   pp_sra 
 
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_hit  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_down, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
+
+
+
 
 #### Upregulated candidates
 ```{r}
@@ -187,6 +670,20 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("All DIA proteomics") +
   pp_sra 
+
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in%  up_in_tris12_cand  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_up, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
 
 #### Downregulated hits
@@ -214,6 +711,20 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("All DIA proteomics") +
   pp_sra 
+
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in%  down_in_tris12_cand  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_down, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
 
 #### Top 100 upregulated proteins
@@ -243,6 +754,19 @@ DIA %>%
   ggtitle("All DIA proteomics") +
   pp_sra 
 
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in% up_in_tris12_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_up = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_up, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
 
 
@@ -272,6 +796,20 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("All DIA proteomics") +
   pp_sra 
+
+DIA %>% 
+  filter(!is.na(trisomy12),PG.ProteinGroups %in% down_in_tris12_100  ) %>%
+  group_by(cohort, Sample, `Sample ID`, Pat_ID, trisomy12) %>%
+  summarise(mean_down = mean(log.norm.MS2Quantity, na.rm=TRUE )) %>%
+  ungroup() %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_down, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  pp_sra +
+  facet_wrap(~cohort)
 ```
 
 
@@ -289,6 +827,77 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("DIA proteomics Germany_1") +
   pp_sra
+
+message("Number of NAs DIA Germany_1:")
+
+DIA %>% 
+  filter(!is.na(IGHV_mutated), cohort == "Germany_1",PG.ProteinGroups =="ZAP70"  ) %>% 
+  select(IGHV_mutated, Sample, log.norm.MS2Quantity) %>% unique %>% group_by(IGHV_mutated) %>% summarise(NAs=sum(is.na(log.norm.MS2Quantity)) )
+
+############ Germany_2
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70", cohort == "Germany_2"  ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, log.norm.MS2Quantity, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("DIA proteomics Germany_2") +
+  pp_sra
+
+message("Number of NAs DIA Germany_2:")
+DIA %>% 
+  filter(!is.na(IGHV_mutated), cohort == "Germany_2",PG.ProteinGroups =="ZAP70"  ) %>% select(IGHV_mutated, Sample, log.norm.MS2Quantity) %>% unique %>% group_by(IGHV_mutated) %>% summarise(NAs=sum(is.na(log.norm.MS2Quantity)) )
+
+############ Germany_3
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70", cohort == "Germany_3"  ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, log.norm.MS2Quantity, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("DIA proteomics Germany_3") +
+  pp_sra
+
+message("Number of NAs DIA Germany_3:")
+DIA %>% 
+  filter(!is.na(IGHV_mutated), cohort == "Germany_3",PG.ProteinGroups =="ZAP70"  ) %>% select(IGHV_mutated, Sample, log.norm.MS2Quantity) %>% unique %>% group_by(IGHV_mutated) %>% summarise(NAs=sum(is.na(log.norm.MS2Quantity)) )
+
+
+############ Sweden
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70", cohort == "Sweden_1"  ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, log.norm.MS2Quantity, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("DIA proteomics Sweden_1") +
+  pp_sra
+
+message("Number of NAs DIA Sweden_1:")
+DIA %>% 
+  filter(!is.na(IGHV_mutated), cohort == "Sweden_1",PG.ProteinGroups =="ZAP70"  ) %>% select(IGHV_mutated, Sample, log.norm.MS2Quantity) %>% unique %>% group_by(IGHV_mutated) %>% summarise(NAs=sum(is.na(log.norm.MS2Quantity)) )
+
+############ High risk
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups =="ZAP70", cohort == "High_risk"  ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, log.norm.MS2Quantity, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("DIA proteomics High_risk") +
+  pp_sra
+
+message("Number of NAs DIA High_risk:")
+DIA %>% 
+  filter(!is.na(IGHV_mutated), cohort == "High_risk",PG.ProteinGroups =="ZAP70"  ) %>% select(IGHV_mutated, Sample, log.norm.MS2Quantity) %>% unique %>% group_by(IGHV_mutated) %>% summarise(NAs=sum(is.na(log.norm.MS2Quantity)) )
 
 ############ all
 DIA %>% 
@@ -321,6 +930,20 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("BCR protein abundances ~ IGHV") +
   pp_sra
+
+DIA %>% 
+  filter(!is.na(IGHV_mutated),PG.ProteinGroups %in% BCR_genes) %>%
+  group_by(Sample, IGHV_mutated, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  ggplot(aes(IGHV_mutated, mean_BCR, group= IGHV_mutated, fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "wilcox") +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("BCR protein abundances ~ IGHV") +
+  facet_wrap(~cohort) +
+  pp_sra
 ```
 
 ## IGHV + trisomy12
@@ -339,8 +962,124 @@ DIA %>%
   scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
   ggtitle("BCR protein abundances ~ IGHV + trisomy12") +
   pp_sra
+
+DIA %>% 
+  filter(!is.na(IGHV_mutated),!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes) %>%
+  group_by(Sample, IGHV_mutated, trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(interaction(IGHV_mutated, trisomy12), mean_BCR, group= interaction(IGHV_mutated, trisomy12), fill=IGHV_mutated )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means() +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("BCR protein abundances ~ IGHV + trisomy12") +
+  facet_wrap(~cohort) +
+  pp_sra
 ```
 
+
+#### no TP53 or del17p13 and no PG5
+```{r}
+DIA %>% 
+  filter(!is.na(IGHV_mutated),!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1", 
+         (is.na(TP53) | TP53== 0), (is.na(del17p13) | del17p13== 0),
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(Sample, IGHV_mutated,trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  mutate("trisomy12 + IGHV" =  if_else(trisomy12 ==1 & IGHV_mutated == 1, "trisomy12 M-CLL", 
+                                       if_else(trisomy12 ==1 & IGHV_mutated == 0, "trisomy12 U-CLL", 
+                                                if_else(trisomy12 ==0 & IGHV_mutated == 1, "wt M-CLL", 
+                                                         if_else(trisomy12 ==0 & IGHV_mutated == 0, "wt U-CLL", "NA")  ) ) ) ) %>%
+  ggplot(aes(`trisomy12 + IGHV`, mean_BCR, group= `trisomy12 + IGHV`, fill=`trisomy12 + IGHV` )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "t.test", 
+                     comparisons = list( c("wt M-CLL", "wt U-CLL"), c( "trisomy12 U-CLL", "wt U-CLL" ),
+                                           c( "trisomy12 M-CLL", "wt M-CLL" ) ) ) +
+  #scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  scale_fill_manual(values=colors_CCP[1:4]) +
+  ggtitle("BCR protein abundances ~ IGHV + trisomy12 no PG5 or TP53/del17p") +
+  pp_sra
+
+
+DIA %>% 
+  filter(!is.na(IGHV_mutated),!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1", 
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(Sample, IGHV_mutated,trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  mutate("trisomy12 + IGHV" =  if_else(trisomy12 ==1 & IGHV_mutated == 1, "trisomy12 M-CLL", 
+                                       if_else(trisomy12 ==1 & IGHV_mutated == 0, "trisomy12 U-CLL", 
+                                                if_else(trisomy12 ==0 & IGHV_mutated == 1, "wt M-CLL", 
+                                                         if_else(trisomy12 ==0 & IGHV_mutated == 0, "wt U-CLL", "NA")  ) ) ) ) %>%
+  ggplot(aes(`trisomy12 + IGHV`, mean_BCR, group= `trisomy12 + IGHV`, fill=`trisomy12 + IGHV` )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "t.test", 
+                     comparisons = list( c("wt M-CLL", "wt U-CLL"), c( "trisomy12 U-CLL", "wt U-CLL" ),
+                                           c( "trisomy12 M-CLL", "wt M-CLL" ) ) ) +
+  #scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  scale_fill_manual(values=colors_CCP[1:4]) +
+  ggtitle("BCR protein abundances ~ IGHV + trisomy12 no PG5") +
+  pp_sra
+
+DIA %>% 
+  filter(!is.na(IGHV_mutated),!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1", 
+         cohort != "High_risk",
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(Sample, IGHV_mutated,trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(IGHV_mutated = as.factor(IGHV_mutated)) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  mutate("trisomy12 + IGHV" =  if_else(trisomy12 ==1 & IGHV_mutated == 1, "trisomy12 M-CLL", 
+                                       if_else(trisomy12 ==1 & IGHV_mutated == 0, "trisomy12 U-CLL", 
+                                                if_else(trisomy12 ==0 & IGHV_mutated == 1, "wt M-CLL", 
+                                                         if_else(trisomy12 ==0 & IGHV_mutated == 0, "wt U-CLL", "NA")  ) ) ) ) %>%
+  ggplot(aes(`trisomy12 + IGHV`, mean_BCR, group= `trisomy12 + IGHV`, fill=`trisomy12 + IGHV` )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "t.test", 
+                     comparisons = list( c("wt M-CLL", "wt U-CLL"), c( "trisomy12 U-CLL", "wt U-CLL" ),
+                                           c( "trisomy12 M-CLL", "wt M-CLL" ) ) ) +
+  #scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  scale_fill_manual(values=colors_CCP[1:4]) +
+  ggtitle("BCR protein abundances ~ IGHV + trisomy12 no PG5 and High risk") +
+  pp_sra
+
+DIA %>% 
+  filter(!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1", 
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(Sample, trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_BCR, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "t.test" ) +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("BCR protein abundances ~ trisomy12 no PG5") +
+  pp_sra
+
+DIA %>% 
+  filter(!is.na(trisomy12), PG.ProteinGroups %in% BCR_genes, cohort != "Germany_1", 
+         (is.na(TP53) | TP53== 0), (is.na(del17p13) | del17p13== 0),
+         !Sample %in% (pred_DIA_PG5 %>% filter(PG5_predicted_ktsp == TRUE) %>% .$Sample ) ) %>%
+  group_by(Sample, trisomy12, cohort) %>%
+  summarise(mean_BCR = mean(log.norm.MS2Quantity, na.rm= TRUE) ) %>%
+  mutate(trisomy12 = as.factor(trisomy12)) %>%
+  ggplot(aes(trisomy12, mean_BCR, group= trisomy12, fill=trisomy12 )) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  stat_compare_means(method = "t.test" ) +
+  scale_fill_manual(values=c("#0571b0", "#ca0020", "grey")) +
+  ggtitle("BCR protein abundances ~ trisomy12 no PG5 or TP53/del17p") +
+  pp_sra
+```
 
 # Session Info
 ```{r}
@@ -349,4 +1088,10 @@ sessionInfo()
 
 ```{r knit exit}
 knitr::knit_exit()
+```
+
+# Save important plots
+```{r}
+#save(...,
+#     file = "RData_plots/....RData")
 ```

@@ -97,8 +97,160 @@ metaData_DIA_OS_diag <- metaData_DIA %>%
 
 # Analysis
 ## Multivariate analysis of common covariates and PG5
+### HiRIEF (TTT)
+#### All patients
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(time, status) ~ TP53, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ del13q14, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+IGHV, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV, 
+      data = metaData_HiRIEF_TTT)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV + PG5+ treated, 
+      data = metaData_HiRIEF_TTT%>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del17p13+IGHV+ PG5, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ del17P53+IGHV+ PG5, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5, 
+                                        del17P53 = ifelse( TP53 ==1 | del17p13==1, 1, 0 )))
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5+ treated, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53+ treated, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ IGHV+ PG5 + PG5:IGHV, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5 + IGHV + PG5:TP53 + PG5:IGHV, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ treated+ PG5 + PG5:treated, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5 + IGHV + treated + PG5:TP53 + PG5:IGHV+ PG5:treated, 
+      data = metaData_HiRIEF_TTT %>% mutate(PG5 = PG == 5))
+```
+
+#### Only untreated patients
+```{r}
+coxph(Surv(time, status) ~ PG5, 
+      data = metaData_HiRIEF_TTT %>% filter( treated == 0 ) %>% 
+        mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53, 
+      data = metaData_HiRIEF_TTT %>% filter( treated == 0 ) %>% 
+        mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5, 
+      data = metaData_HiRIEF_TTT %>% filter( treated == 0 ) %>% 
+        mutate(PG5 = PG == 5))
+
+coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_HiRIEF_TTT %>% filter( treated == 0 ) %>% 
+        mutate(PG5 = PG == 5))
+```
+
+### DIA (TTT)
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(time, status) ~ TP53+IGHV, 
+      data = metaData_DIA_TTNT )
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV, 
+      data = metaData_DIA_TTNT)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV + PG5 + cohort, 
+      data = metaData_DIA_TTNT)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del17p13+IGHV+ PG5, 
+      data = metaData_DIA_TTNT )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5, 
+      data = metaData_DIA_TTNT )
+
+coxph(Surv(time, status) ~ del17P53+IGHV+ PG5, 
+      data = metaData_DIA_TTNT %>% mutate(del17P53 = ifelse( TP53 ==1 | del17p13==1, 1, 0 )))
+```
+
 ### DIA (OS from sample)
 #### All patients
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(time, status) ~ TP53+IGHV, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV, 
+      data = metaData_DIA_OS_sample)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV+PG5+cohort + treated_at_collection, 
+      data = metaData_DIA_OS_sample)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del17p13+IGHV+ PG5, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5 + treated_at_collection, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5 + PG5:TP53, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5 + IGHV:TP53, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5 + IGHV:PG5 + PG5:TP53, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5 + treated_at_collection + PG5:IGHV + PG5:TP53+ PG5:treated_at_collection, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5 +trisomy12+del13q14+del11q+del17p13 + PG5:IGHV + PG5:TP53, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ del17P53+IGHV+ PG5, 
+      data = metaData_DIA_OS_sample %>% mutate(del17P53 = ifelse( TP53 ==1 | del17p13==1, 1, 0 )))
+
+coxph(Surv(time, status) ~ TP53+ PG5, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+ PG5 + IGHV:TP53, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+ PG5 + IGHV:TP53 + treated_at_collection, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ IGHV+ PG5 + PG5:IGHV, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ IGHV+ PG5 + PG5:IGHV + treated_at_collection, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_DIA_OS_sample )
+
+coxph(Surv(time, status) ~ treated_at_collection+ PG5 + PG5:treated_at_collection, 
+      data = metaData_DIA_OS_sample )
+```
+
 ##### Extract some values
 ###### IGHV plot
 ```{r}
@@ -216,6 +368,45 @@ COX_DIA_TP53_del17_PG5_plot +
                         ends = "first",  type = "closed"))
 ```
 
+
+#### Only untreated patients
+```{r}
+coxph(Surv(time, status) ~ TP53, 
+      data = metaData_DIA_OS_sample %>% filter( treated_at_collection == 0 )  )
+
+coxph(Surv(time, status) ~ PG5, 
+      data = metaData_DIA_OS_sample %>% filter( treated_at_collection == 0 ) )
+
+coxph(Surv(time, status) ~ TP53+ PG5, 
+      data = metaData_DIA_OS_sample %>% filter( treated_at_collection == 0 ) )
+
+coxph(Surv(time, status) ~ TP53+ PG5 + PG5:TP53, 
+      data = metaData_DIA_OS_sample %>% filter( treated_at_collection == 0 ) )
+```
+
+### DIA (OS from diagnosis)
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(time, status) ~ TP53+IGHV, 
+      data = metaData_DIA_OS_diag )
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV, 
+      data = metaData_DIA_OS_diag)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del13q14+del11q+del17p13+IGHV+PG5+cohort, 
+      data = metaData_DIA_OS_diag)
+
+coxph(Surv(time, status) ~ TP53+trisomy12+del17p13+IGHV+ PG5, 
+      data = metaData_DIA_OS_diag )
+
+coxph(Surv(time, status) ~ TP53+IGHV+ PG5, 
+      data = metaData_DIA_OS_diag )
+
+coxph(Surv(time, status) ~ TP53+ PG5, 
+      data = metaData_DIA_OS_diag )
+
+coxph(Surv(time, status) ~ del17P53+IGHV+ PG5, 
+      data = metaData_DIA_OS_diag %>% mutate(del17P53 = ifelse( TP53 ==1 | del17p13==1, 1, 0 )))
+```
 
 ### OS DIA and HiRIEF combined
 ```{r}
